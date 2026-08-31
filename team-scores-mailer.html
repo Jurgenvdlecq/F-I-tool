@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Team-scores Mailer — Wittebrug</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f7fb; --surface: #ffffff; --surface-2: #eef1f8; --border: #dde3ef;
+    --text: #161b26; --muted: #5c6579; --accent: #1c4f9c; --accent-weak: #e8eefb;
+    --goed: #1f8a5f; --shadow: 0 1px 2px rgba(20,30,60,.04), 0 8px 24px -12px rgba(20,30,60,.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10131a; --surface: #181c26; --surface-2: #1f2430; --border: #2a3142;
+      --text: #e8eaf2; --muted: #94a0b8; --accent: #7ba3e8; --accent-weak: #1c2c47;
+      --goed: #4fbf8a; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10131a; --surface: #181c26; --surface-2: #1f2430; --border: #2a3142;
+    --text: #e8eaf2; --muted: #94a0b8; --accent: #7ba3e8; --accent-weak: #1c2c47;
+    --goed: #4fbf8a; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f7fb; --surface: #ffffff; --surface-2: #eef1f8; --border: #dde3ef;
+    --text: #161b26; --muted: #5c6579; --accent: #1c4f9c; --accent-weak: #e8eefb;
+    --goed: #1f8a5f; --shadow: 0 1px 2px rgba(20,30,60,.04), 0 8px 24px -12px rgba(20,30,60,.12);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); font-variant-numeric: tabular-nums; }
+  .app { max-width: 720px; margin: 0 auto; padding: 28px 20px 80px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px; box-shadow: var(--shadow); margin-bottom: 16px; }
+  .panel h2 { font-size: 14px; margin: 0 0 14px; }
+
+  .dropzone { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; border: 1.5px dashed var(--border); border-radius: 12px; padding: 26px 20px; cursor: pointer; }
+  .dropzone:hover { border-color: var(--accent); }
+  .dropzone-title { font-size: 14px; font-weight: 600; }
+  .dropzone-hint { font-size: 12px; color: var(--muted); }
+  input[type="file"] { display: none; }
+
+  .file-chip { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 12px; background: var(--surface-2); border-radius: 8px; font-size: 13px; }
+  .file-chip button { margin-left: auto; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+
+  .btn-primary { background: var(--accent); color: #fff; border: none; border-radius: 9px; padding: 11px 20px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .btn-primary:disabled { opacity: .5; cursor: default; }
+  .btn-secondary { background: var(--surface); color: var(--text); border: 1.5px solid var(--border); border-radius: 9px; padding: 11px 18px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .btn-block { width: 100%; margin-top: 16px; }
+
+  .veld-label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; color: var(--muted); }
+  select, input[type="text"], textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; font-size: 13.5px; font-family: inherit; color: var(--text); background: var(--surface); outline: none; margin-bottom: 14px; }
+  select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+
+  .status-line { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+
+  .mail-window { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+  .mail-window-bar { background: var(--surface-2); border-bottom: 1px solid var(--border); padding: 10px 14px; }
+  .mail-window-row { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 3px 0; }
+  .mail-window-label { width: 84px; flex-shrink: 0; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .mail-window-row input { margin: 0; border: none; background: none; padding: 4px 0; }
+  #mail-preview { padding: 18px 20px; font-size: 14px; line-height: 1.55; min-height: 160px; }
+  #mail-preview table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+  #mail-preview th, #mail-preview td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  #mail-preview th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+
+  .acties { display: flex; gap: 10px; align-items: center; }
+  .kopieer-status { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>Team-scores Mailer</h1>
+  <p class="sub">Periodiek overzicht per team (locatie + merk) — upload de salesrapportage, kies een team, verstuur zelf.</p>
+
+  <div class="panel">
+    <h2>Salesrapportage uploaden</h2>
+    <label class="dropzone" id="dropzone-pdf">
+      <div class="dropzone-title">Salesrapportage Wittebrug (PDF)</div>
+      <div class="dropzone-hint">Klik om te kiezen — meerdere tegelijk mag ook</div>
+      <input type="file" id="input-pdf" accept="application/pdf" multiple>
+    </label>
+    <div class="file-chip" id="chip-pdf" style="display:none;">
+      <span>✓ <span id="chip-pdf-naam"></span></span>
+      <button type="button" id="chip-pdf-remove">✕</button>
+    </div>
+    <button class="btn-primary btn-block" id="btn-verwerk" disabled>Verwerk bestand</button>
+    <div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:12px;">
+      Deze rapportage bevat alleen jaarstanden per medewerker. De tool onthoudt elke upload en
+      leidt daar de periode- en trendcijfers uit af (bv. maandelijks een nieuwe rapportage
+      uploaden geeft maandcijfers). Heb je oudere rapportages bewaard? Upload die één voor één
+      (oud → nieuw) en de trends staan er meteen in, ook die van vorig jaar.
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:10px;">
+      <span style="font-size:11.5px;color:var(--muted);" id="geschiedenis-info"></span>
+      <button type="button" id="btn-wis-geschiedenis" style="background:none;border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;cursor:pointer;padding:3px 9px;font-family:inherit;">geschiedenis wissen</button>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-teams" style="display:none;">
+    <h2>Team kiezen</h2>
+    <div class="status-line" id="status-line"></div>
+    <label class="veld-label" for="select-team">Team</label>
+    <select id="select-team"></select>
+
+    <div id="grafiek-wrap" style="display:none;margin-bottom:16px;">
+      <canvas id="team-grafiek" width="640" height="220" style="max-width:100%;height:auto;display:block;"></canvas>
+    </div>
+
+    <div class="mail-window">
+      <div class="mail-window-bar">
+        <div class="mail-window-row">
+          <span class="mail-window-label">Aan</span>
+          <input type="text" id="veld-aan" placeholder="bv. teamleider@wittebrug.nl">
+        </div>
+        <div class="mail-window-row">
+          <span class="mail-window-label">Onderwerp</span>
+          <input type="text" id="veld-onderwerp">
+        </div>
+      </div>
+      <div id="mail-preview" contenteditable="true"></div>
+    </div>
+
+    <div class="acties">
+      <button class="btn-secondary" id="btn-download" type="button">Download .eml</button>
+      <button class="btn-primary" id="btn-kopieren" type="button">📋 Kopiëren voor Outlook</button>
+      <span class="kopieer-status" id="kopieer-status"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   PDF-PARSING — letterlijk hergebruikt uit fi-update-mailtool/index.html
+   (zelfde salesrapportage-formaat, dus zelfde, al-geteste parselogica)
+   ============================================================ */
+const LOCATIES = ['Voorschoten','Honselersdijk','Zoetermeer','Noordwijk','De Lier','Forepark','Leiden','Fleetsales'];
+const MERKEN = ['Seat / CUPRA','Volkswagen','Occasions','CUPRA','Skoda','Audi','LKW','SEAT'];
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+function isoWeekNaarDatum(isoJaar, isoWeek, dagInWeek = 1) {
+  const jan4 = new Date(Date.UTC(isoJaar, 0, 4));
+  const jan4Dag = (jan4.getUTCDay() + 6) % 7;
+  const week1Maandag = new Date(jan4);
+  week1Maandag.setUTCDate(jan4.getUTCDate() - jan4Dag);
+  const doel = new Date(week1Maandag);
+  doel.setUTCDate(week1Maandag.getUTCDate() + (isoWeek - 1) * 7 + (dagInWeek - 1));
+  return doel;
+}
+
+function formatDatum(d) {
+  return d.toLocaleDateString('nl-NL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+async function laadPdfPaginas(file) {
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+  const paginas = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const pagina = await pdf.getPage(i);
+    const inhoud = await pagina.getTextContent();
+    const items = inhoud.items
+      .filter(it => it.str && it.str.trim() !== '')
+      .map(it => ({ tekst: it.str, x: it.transform[4], y: it.transform[5] }));
+    paginas.push(items);
+  }
+  return paginas;
+}
+
+function groepeerInRegels(items, yTolerantie = 2.5) {
+  const gesorteerd = [...items].sort((a, b) => b.y - a.y || a.x - b.x);
+  const regels = [];
+  for (const item of gesorteerd) {
+    let regel = regels.find(r => Math.abs(r.y - item.y) <= yTolerantie);
+    if (!regel) { regel = { y: item.y, items: [] }; regels.push(regel); }
+    regel.items.push(item);
+  }
+  regels.forEach(r => r.items.sort((a, b) => a.x - b.x));
+  regels.sort((a, b) => b.y - a.y);
+  regels.forEach(r => { r.tekst = r.items.map(i => i.tekst).join(' ').replace(/\s+/g, ' ').trim(); });
+  return regels;
+}
+
+function striplLocatieEnMerk(tekst, huidigeLocatie, huidigeMerk) {
+  let rest = tekst.trim();
+  let locatie = huidigeLocatie, merk = huidigeMerk;
+
+  const langsteEersteMatch = (lijst) => {
+    const treffers = lijst.filter(v => rest.startsWith(v + ' ') || rest === v);
+    if (treffers.length === 0) return null;
+    treffers.sort((a, b) => b.length - a.length);
+    return treffers[0];
+  };
+
+  const locatieTreffer = langsteEersteMatch(LOCATIES);
+  if (locatieTreffer) { locatie = locatieTreffer; rest = rest.slice(locatieTreffer.length).trim(); }
+
+  const merkTreffer = langsteEersteMatch(MERKEN);
+  if (merkTreffer) { merk = merkTreffer; rest = rest.slice(merkTreffer.length).trim(); }
+
+  return { locatie, merk, rest };
+}
+
+function parseVerzekeringenTabel(paginas) {
+  const regelsPerPagina = paginas.map(p => groepeerInRegels(p));
+  const alleRegels = [];
+  regelsPerPagina.forEach((regels, paginaIdx) => {
+    regels.forEach(r => alleRegels.push({ ...r, paginaIdx }));
+  });
+
+  const startIdx = alleRegels.findIndex(r => r.tekst.includes('Medewerker') && r.tekst.includes('RIVA'));
+  if (startIdx === -1) return { rijen: [], waarschuwingen: ['Kon de Verzekeringen-tabel niet vinden (header met "Medewerker"/"RIVA" niet gevonden).'] };
+
+  const rijen = [];
+  const waarschuwingen = [];
+  let huidigeLocatie = null, huidigeMerk = null;
+
+  for (let i = startIdx + 1; i < alleRegels.length; i++) {
+    const regel = alleRegels[i];
+    const t = regel.tekst;
+
+    if (/^Totaal\b/.test(t)) continue;
+    if (/^(Voorraad|Rentals|Salestrajecten)\b/.test(t) && !t.includes('%')) break;
+    if (t === '') continue;
+
+    const tokens = t.split(' ');
+    const getallen = [];
+    const percentages = [];
+    let naamTokens = [];
+    for (const tok of tokens) {
+      if (/^\d+%$/.test(tok)) { percentages.push(parseInt(tok, 10)); continue; }
+      if (/^\d+$/.test(tok) || tok === '-') {
+        getallen.push(tok === '-' ? 0 : parseInt(tok, 10));
+      } else if (getallen.length === 0) {
+        naamTokens.push(tok);
+      }
+    }
+
+    if (getallen.length !== 5) continue;
+
+    const { locatie, merk, rest } = striplLocatieEnMerk(naamTokens.join(' '), huidigeLocatie, huidigeMerk);
+    huidigeLocatie = locatie; huidigeMerk = merk;
+
+    const medewerker = rest.trim();
+    if (!medewerker) { waarschuwingen.push(`Regel overgeslagen (geen naam herkend): "${t}"`); continue; }
+
+    const [riva, vwbank, los, totaal, afleveringen] = getallen;
+    // laatste %-kolom in de rij is altijd "Doel" (tot nu toe overal 25%, maar we lezen 'm
+    // gewoon uit de rij zelf zodat een toekomstige doelwijziging vanzelf meegaat)
+    const verzDoel = percentages.length > 0 ? percentages[percentages.length - 1] : 25;
+    rijen.push({ locatie, merk, medewerker, riva, vwbank, los, totaal, afleveringen, verzDoel });
+  }
+
+  return { rijen, waarschuwingen };
+}
+
+// Parseert de "Financieringen en private lease"-tabel (staat vlak vóór de Verzekeringen-tabel in
+// hetzelfde rapport). De rij is positioneel: naam, # financ., doel%, [realisatie%], # private
+// lease, # IkRij.nl, [doel%], [realisatie%], [# orders] — bv. "7 13% 13% 15 1 33% 40% 40".
+// Let op: de realisatie%-cel is LEEG bij 0 financieringen (bv. "Tim Verwoerd 0 13% 1 0 33% 50% 2"),
+// dus we lezen realisatie alleen als het token DIRECT na doel% óók een percentage is — anders zouden
+// we per ongeluk het private-lease-doel als financieringsrealisatie lezen. De realisatie% wordt
+// bewust uitgelezen en niet zelf berekend: de noemer ervan ("orders") staat niet als kolom in dit
+// rapport en is niet gelijk aan de afleveringen uit de verzekeringen-tabel (geverifieerd: bv.
+// Duncan 8 financ. = 20% realisatie, maar 8/52 afleveringen zou 15% zijn). Verdere kolommen
+// (private lease e.d.) zijn voor deze tool niet relevant.
+function parseFinancieringenTabel(paginas) {
+  const regelsPerPagina = paginas.map(p => groepeerInRegels(p));
+  const alleRegels = [];
+  regelsPerPagina.forEach((regels, paginaIdx) => {
+    regels.forEach(r => alleRegels.push({ ...r, paginaIdx }));
+  });
+
+  const startIdx = alleRegels.findIndex(r => r.tekst.includes('Medewerker') && /financ/i.test(r.tekst));
+  if (startIdx === -1) return { rijen: [], waarschuwingen: ['Kon de Financieringen-tabel niet vinden (header met "Medewerker"/"financ." niet gevonden).'] };
+
+  // eindigt waar de Verzekeringen-tabel begint, die volgt altijd direct erna in dit rapport
+  let eindIdx = alleRegels.findIndex((r, i) => i > startIdx && r.tekst.includes('Medewerker') && r.tekst.includes('RIVA'));
+  if (eindIdx === -1) eindIdx = alleRegels.length;
+
+  const rijen = [];
+  const waarschuwingen = [];
+  let huidigeLocatie = null, huidigeMerk = null;
+
+  for (let i = startIdx + 1; i < eindIdx; i++) {
+    const regel = alleRegels[i];
+    const t = regel.tekst;
+
+    if (/^Totaal\b/.test(t)) continue;
+    if (t === '') continue;
+
+    const tokens = t.split(' ');
+    const eersteGetalIdx = tokens.findIndex(tok => /^\d+$/.test(tok));
+    if (eersteGetalIdx === -1) continue;
+
+    const naamTokens = tokens.slice(0, eersteGetalIdx).filter(tok => !/^\d+%$/.test(tok));
+    const financAantal = parseInt(tokens[eersteGetalIdx], 10);
+    const naGetal1 = tokens[eersteGetalIdx + 1];
+    const naGetal2 = tokens[eersteGetalIdx + 2];
+    const financDoel = (naGetal1 && /^\d+%$/.test(naGetal1)) ? parseInt(naGetal1, 10) : null;
+    const financRealisatie = (financDoel !== null && naGetal2 && /^\d+%$/.test(naGetal2)) ? parseInt(naGetal2, 10) : null;
+
+    const { locatie, merk, rest } = striplLocatieEnMerk(naamTokens.join(' '), huidigeLocatie, huidigeMerk);
+    huidigeLocatie = locatie; huidigeMerk = merk;
+
+    const medewerker = rest.trim();
+    if (!medewerker) { waarschuwingen.push(`Regel overgeslagen (geen naam herkend): "${t}"`); continue; }
+
+    rijen.push({ locatie, merk, medewerker, financAantal, financDoel, financRealisatie });
+  }
+
+  return { rijen, waarschuwingen };
+}
+
+// Koppelt financieringen aan de verzekeringen-rijen op locatie|merk|medewerker. financAantal blijft
+// `null` (niet 0) als er geen match gevonden is — zo verwarren we "geen data" nooit met "bevestigd 0".
+function koppelFinancieringen(verzekeringenRijen, financieringenRijen) {
+  const financMap = new Map();
+  financieringenRijen.forEach(r => financMap.set(`${r.locatie}|${r.merk}|${r.medewerker}`, r));
+  return verzekeringenRijen.map(r => {
+    const f = financMap.get(`${r.locatie}|${r.merk}|${r.medewerker}`);
+    return {
+      ...r,
+      financAantal: f ? f.financAantal : null,
+      financDoel: f ? f.financDoel : null,
+      financRealisatie: f ? f.financRealisatie : null,
+    };
+  });
+}
+
+async function parseSalesrapportagePdf(file) {
+  const paginas = await laadPdfPaginas(file);
+  const eerstePaginaTekst = paginas[0].map(i => i.tekst).join(' ');
+  const weekMatch = eerstePaginaTekst.match(/(\d{4})-(\d{1,2})\b/);
+  const isoJaar = weekMatch ? parseInt(weekMatch[1], 10) : null;
+  const isoWeek = weekMatch ? parseInt(weekMatch[2], 10) : null;
+
+  const { rijen: verzekeringenRijen, waarschuwingen: waarschuwingenVerz } = parseVerzekeringenTabel(paginas);
+  const { rijen: financieringenRijen, waarschuwingen: waarschuwingenFinanc } = parseFinancieringenTabel(paginas);
+
+  return { isoJaar, isoWeek, verzekeringenRijen, financieringenRijen, waarschuwingen: [...waarschuwingenVerz, ...waarschuwingenFinanc] };
+}
+
+/* ============================================================
+   GESCHIEDENIS (localStorage) — nodig om échte periodecijfers te tonen:
+   de PDF bevat per medewerker alleen cumulatieve jaarstanden (YTD), dus
+   "wat deed iemand sinds de vorige upload" = huidige stand − stand van de vorige upload.
+   Werkt ongeacht of je wekelijks of maandelijks uploadt — het verschil tussen
+   twee snapshots is simpelweg de periode ertussen. Zelfde snapshot-patroon als
+   de F&I-hoofdtool.
+   ============================================================ */
+const GESCHIEDENIS_SLEUTEL = 'team-scores-geschiedenis-v1';
+
+function laadGeschiedenis() {
+  try {
+    return JSON.parse(localStorage.getItem(GESCHIEDENIS_SLEUTEL) || '[]');
+  } catch (e) { return []; }
+}
+
+function bewaarSnapshot(snapshot) {
+  const geschiedenis = laadGeschiedenis();
+  const bestaandeIdx = geschiedenis.findIndex(s => s.isoJaar === snapshot.isoJaar && s.isoWeek === snapshot.isoWeek);
+  if (bestaandeIdx !== -1) geschiedenis[bestaandeIdx] = snapshot;
+  else geschiedenis.push(snapshot);
+  geschiedenis.sort((a, b) => (a.isoJaar - b.isoJaar) || (a.isoWeek - b.isoWeek));
+  while (geschiedenis.length > 60) geschiedenis.shift();
+  localStorage.setItem(GESCHIEDENIS_SLEUTEL, JSON.stringify(geschiedenis));
+}
+
+function vindVorigeUpload(geschiedenis, huidigJaar, huidigWeek) {
+  const huidigeDatum = isoWeekNaarDatum(huidigJaar, huidigWeek);
+  let beste = null;
+  for (const snap of geschiedenis) {
+    if (snap.isoJaar === huidigJaar && snap.isoWeek === huidigWeek) continue;
+    const datum = isoWeekNaarDatum(snap.isoJaar, snap.isoWeek);
+    if (datum < huidigeDatum) {
+      if (!beste || datum > isoWeekNaarDatum(beste.isoJaar, beste.isoWeek)) beste = snap;
+    }
+  }
+  return beste;
+}
+
+function wisGeschiedenis() {
+  localStorage.removeItem(GESCHIEDENIS_SLEUTEL);
+}
+
+// Zet de opgeslagen cumulatieve snapshots om naar periode-op-periode-verschillen per medewerker.
+// Elk verschil hoort bij de periode van de látere snapshot. Ontbreekt iemand in de eerdere
+// snapshot (nieuw in dienst / andere vestiging), dan telt die periode niet mee — anders zou
+// z'n volledige jaarstand als één periode worden gezien en de trend compleet vertekenen.
+function bouwWeekDeltas(geschiedenis, isoJaar) {
+  const jaarSnaps = geschiedenis.filter(s => s.isoJaar === isoJaar).sort((a, b) => a.isoWeek - b.isoWeek);
+  const periodes = [];
+  for (let i = 1; i < jaarSnaps.length; i++) {
+    const vorige = new Map();
+    jaarSnaps[i - 1].rijen.forEach(r => vorige.set(`${r.locatie}|${r.merk}|${r.medewerker}`, r));
+    const perPersoon = new Map();
+    jaarSnaps[i].rijen.forEach(r => {
+      const p = vorige.get(`${r.locatie}|${r.merk}|${r.medewerker}`);
+      if (!p) return;
+      perPersoon.set(`${r.locatie}|${r.merk}|${r.medewerker}`, {
+        verz: Math.max(0, r.totaal - p.totaal),
+        afl: Math.max(0, r.afleveringen - p.afleveringen),
+        fin: (r.financAantal !== null && p.financAantal !== null) ? Math.max(0, r.financAantal - p.financAantal) : null,
+      });
+    });
+    periodes.push({ isoWeek: jaarSnaps[i].isoWeek, perPersoon });
+  }
+  return periodes;
+}
+
+// Vergelijkt per medewerker de recente periode met de periode dáárvoor (twee even lange
+// vensters, samen de volledige beschikbare geschiedenis, max 4 periodes per venster). Vergelijkt
+// conversie% i.p.v. aantallen, zodat iemand met een rustige periode niet automatisch "daalt".
+// Beide vensters hebben een minimum aantal afleveringen nodig — anders is het ruis, geen trend.
+const TREND_DREMPEL_AFLEVERINGEN = 3;
+
+function berekenPersoonsTrends(geschiedenis, isoJaar) {
+  const periodes = bouwWeekDeltas(geschiedenis, isoJaar);
+  if (periodes.length < 2) return null;
+
+  const vensterLengte = Math.min(4, Math.floor(periodes.length / 2));
+  const recent = periodes.slice(periodes.length - vensterLengte);
+  const eerder = periodes.slice(periodes.length - vensterLengte * 2, periodes.length - vensterLengte);
+
+  const somVenster = (venster) => {
+    const map = new Map();
+    venster.forEach(p => {
+      p.perPersoon.forEach((waarden, sleutel) => {
+        if (!map.has(sleutel)) map.set(sleutel, { verz: 0, afl: 0, fin: 0 });
+        const s = map.get(sleutel);
+        s.verz += waarden.verz; s.afl += waarden.afl; s.fin += (waarden.fin || 0);
+      });
+    });
+    return map;
+  };
+
+  const recentMap = somVenster(recent), eerderMap = somVenster(eerder);
+  const trends = new Map();
+  recentMap.forEach((r, sleutel) => {
+    const e = eerderMap.get(sleutel);
+    if (!e) return;
+    if (r.afl < TREND_DREMPEL_AFLEVERINGEN || e.afl < TREND_DREMPEL_AFLEVERINGEN) return;
+    const recentPct = (r.verz / r.afl) * 100;
+    const eerderPct = (e.verz / e.afl) * 100;
+    trends.set(sleutel, {
+      recentPct: Math.round(recentPct), eerderPct: Math.round(eerderPct),
+      verschil: Math.round(recentPct - eerderPct),
+      recentAfl: r.afl, eerderAfl: e.afl,
+    });
+  });
+
+  return {
+    trends, vensterLengte,
+    recentWeken: recent.map(p => p.isoWeek),
+    eerderWeken: eerder.map(p => p.isoWeek),
+  };
+}
+
+// Zelfde week vorig jaar (of de dichtstbijzijnde eerdere week daarvan) — alleen beschikbaar als
+// er ook rapportages van vorig jaar zijn geüpload. Vergelijkt de YTD-stand op een gelijk punt
+// in het jaar, dus een eerlijke appels-met-appels-vergelijking.
+function vindVorigJaarSnapshot(geschiedenis, isoJaar, isoWeek) {
+  const vorigJaar = geschiedenis.filter(s => s.isoJaar === isoJaar - 1 && s.isoWeek <= isoWeek);
+  if (vorigJaar.length === 0) return null;
+  return vorigJaar.sort((a, b) => b.isoWeek - a.isoWeek)[0];
+}
+
+// Periodecijfers = huidige YTD − YTD van de vorige upload. Nieuwe medewerkers (geen vorige rij)
+// tellen volledig als "deze periode". weekFin blijft null als de financieringsdata aan één van
+// beide kanten ontbreekt — onbekend is niet hetzelfde als nul.
+function berekenWeekRijen(rijen, vorigeSnapshot) {
+  if (!vorigeSnapshot) return rijen.map(r => ({ ...r, weekAfl: null, weekVerz: null, weekFin: null }));
+  const vorigeMap = new Map();
+  vorigeSnapshot.rijen.forEach(r => vorigeMap.set(`${r.locatie}|${r.merk}|${r.medewerker}`, r));
+  return rijen.map(r => {
+    const p = vorigeMap.get(`${r.locatie}|${r.merk}|${r.medewerker}`);
+    const weekAfl = Math.max(0, r.afleveringen - (p ? p.afleveringen : 0));
+    const weekVerz = Math.max(0, r.totaal - (p ? p.totaal : 0));
+    let weekFin = null;
+    if (r.financAantal !== null) {
+      const vorigeFin = p ? p.financAantal : 0;
+      if (vorigeFin !== null) weekFin = Math.max(0, r.financAantal - vorigeFin);
+    }
+    return { ...r, weekAfl, weekVerz, weekFin };
+  });
+}
+
+/* ============================================================
+   TEAMS GROEPEREN (locatie + merk) EN MAILTEKST BOUWEN
+   ============================================================ */
+let teams = {}; // { "Forepark Audi": [rij, rij, ...] }
+let huidigeData = null;
+
+// Fleetsales valt buiten de scope van deze scorecard (andere F&I-dynamiek, geen vergelijkbare
+// doelen als de showroom-verkopers) — wordt hier uitgefilterd, vóór het groeperen in teams, zodat
+// Fleetsales ook nooit meetelt in de teamranking of het bedrijfsgemiddelde.
+function filterShowroomVerkopers(rijen) {
+  return rijen.filter(r => r.locatie !== 'Fleetsales' && r.merk !== 'Fleetsales');
+}
+
+function groepeerInTeams(verzekeringenRijen) {
+  const map = {};
+  verzekeringenRijen.forEach(r => {
+    const key = `${r.locatie} ${r.merk}`;
+    if (!map[key]) map[key] = [];
+    map[key].push(r);
+  });
+  return map;
+}
+
+// Mail-HTML gebruikt vaste hex-kleuren en inline-styles (geen CSS-variabelen): zodra de mail in
+// Outlook geplakt/geopend wordt bestaat de stylesheet van deze pagina niet meer.
+const TH_STIJL = 'text-align:left;padding:6px 8px;border-bottom:1px solid #dde3ed;font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;';
+const TD_STIJL = 'text-align:left;padding:6px 8px;border-bottom:1px solid #eef1f8;';
+const TD_TOTAAL_STIJL = 'text-align:left;padding:6px 8px;border-top:2px solid #dde3ed;font-weight:700;';
+
+function vinkje(opKoers) {
+  return opKoers
+    ? '<span style="color:#1f8a5f;font-weight:700;">&nbsp;✓</span>'
+    : '<span style="color:#c0392b;font-weight:700;">&nbsp;✗</span>';
+}
+
+function bouwTeamTabel(rijen, heeftWeek) {
+  const regels = rijen.map(r => {
+    const verzPct = r.afleveringen > 0 ? Math.round((r.totaal / r.afleveringen) * 100) : null;
+    const verzVink = (r.afleveringen > 0) ? vinkje(verzPct >= (r.verzDoel ?? 25)) : '';
+    const verzTekst = `${r.totaal} (${verzPct !== null ? verzPct + '%' : '–'})${verzVink}`;
+
+    // financierings-% komt rechtstreeks uit de rapportage (eigen noemer, zie parser) — bij 0
+    // financieringen laat de PDF de cel leeg, dan is 0% het feitelijke equivalent
+    let financTekst = '–';
+    if (r.financAantal !== null) {
+      const financPct = r.financRealisatie !== null ? r.financRealisatie : 0;
+      const financVink = r.financDoel !== null ? vinkje(financPct >= r.financDoel) : '';
+      financTekst = `${r.financAantal} (${financPct}%)${financVink}`;
+    }
+
+    const weekCel = heeftWeek ? `<td style="${TD_STIJL}white-space:nowrap;">${r.weekAfl} afl · ${r.weekVerz} verz · ${r.weekFin !== null ? r.weekFin : '–'} fin</td>` : '';
+    return `<tr><td style="${TD_STIJL}">${r.medewerker}</td>${weekCel}<td style="${TD_STIJL}">${r.afleveringen}</td><td style="${TD_STIJL}white-space:nowrap;">${verzTekst}</td><td style="${TD_STIJL}white-space:nowrap;">${financTekst}</td></tr>`;
+  }).join('');
+
+  const totaalAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
+  const totaalPolissen = rijen.reduce((s, r) => s + r.totaal, 0);
+  const totaalPct = totaalAfleveringen > 0 ? Math.round((totaalPolissen / totaalAfleveringen) * 100) + '%' : '–';
+  const totaalFinanc = rijen.reduce((s, r) => s + (r.financAantal || 0), 0);
+  const weekTotaalCel = heeftWeek
+    ? `<td style="${TD_TOTAAL_STIJL}white-space:nowrap;">${rijen.reduce((s, r) => s + (r.weekAfl || 0), 0)} afl · ${rijen.reduce((s, r) => s + (r.weekVerz || 0), 0)} verz · ${rijen.reduce((s, r) => s + (r.weekFin || 0), 0)} fin</td>`
+    : '';
+
+  const doelVoetnoot = `<p style="font-size:11.5px;color:#6b7280;margin:4px 0 12px;">✓/✗ = wel/niet op koers voor het jaardoel uit de rapportage (verzekeringen ${rijen[0] && rijen[0].verzDoel ? rijen[0].verzDoel : 25}%, financiering verschilt per merk). Percentages zijn jaarcijfers.</p>`;
+
+  return `<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;font-size:13px;margin:10px 0 4px;">
+    <thead><tr><th style="${TH_STIJL}">Naam</th>${heeftWeek ? `<th style="${TH_STIJL}">Deze periode</th>` : ''}<th style="${TH_STIJL}">Afl. (jaar)</th><th style="${TH_STIJL}">Verzekeringen (jaar)</th><th style="${TH_STIJL}">Financieringen (jaar)</th></tr></thead>
+    <tbody>
+      ${regels}
+      <tr><td style="${TD_TOTAAL_STIJL}">Totaal</td>${weekTotaalCel}<td style="${TD_TOTAAL_STIJL}">${totaalAfleveringen}</td><td style="${TD_TOTAAL_STIJL}">${totaalPolissen} (${totaalPct})</td><td style="${TD_TOTAAL_STIJL}">${totaalFinanc}</td></tr>
+    </tbody>
+  </table>${doelVoetnoot}`;
+}
+
+// Teamgrafiek: conversie% per periode over de opgebouwde geschiedenis. Vaste pixelgrootte +
+// responsive:false, want de canvas kan getekend worden terwijl het paneel nog verborgen is —
+// een container-afhankelijke maat levert dan een leeg (0×0) plaatje op.
+let teamChart = null;
+
+function bouwTeamGrafiek(teamNaam, geschiedenis, isoJaar, doelPct) {
+  const periodes = bouwWeekDeltas(geschiedenis, isoJaar);
+  const teamLeden = new Set(teams[teamNaam].map(r => `${r.locatie}|${r.merk}|${r.medewerker}`));
+
+  const punten = periodes.map(p => {
+    let verz = 0, afl = 0;
+    p.perPersoon.forEach((waarden, sleutel) => {
+      if (!teamLeden.has(sleutel)) return;
+      verz += waarden.verz; afl += waarden.afl;
+    });
+    return { week: p.isoWeek, pct: afl > 0 ? Math.round((verz / afl) * 100) : null, afl };
+  });
+
+  if (punten.filter(p => p.pct !== null).length < 2) {
+    el('grafiek-wrap').style.display = 'none';
+    if (teamChart) { teamChart.destroy(); teamChart = null; }
+    return null;
+  }
+  el('grafiek-wrap').style.display = '';
+
+  if (teamChart) teamChart.destroy();
+  teamChart = new Chart(el('team-grafiek').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: punten.map(p => `W${p.week}`),
+      datasets: [
+        { label: 'Verzekeringsconversie per periode', data: punten.map(p => p.pct), borderColor: '#1c4f9c', backgroundColor: 'rgba(28,79,156,.08)', tension: .3, pointRadius: 3, spanGaps: true, fill: true },
+        { label: `Doel ${doelPct}%`, data: punten.map(() => doelPct), borderColor: 'rgba(31,138,95,.5)', borderDash: [6, 4], pointRadius: 0 },
+      ],
+    },
+    options: {
+      responsive: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'top', labels: { font: { size: 10 }, boxWidth: 10 } } },
+      scales: { y: { beginAtZero: true, ticks: { font: { size: 10 }, callback: v => v + '%' } } },
+    },
+  });
+  return el('team-grafiek').toDataURL('image/png');
+}
+
+// Stijgers & dalers: wie doet het de laatste periodes beter/slechter dan in de periodes daarvoor.
+// Dit is waar een teamleider op stuurt — niet de absolute stand (die verandert traag omdat het
+// jaarcijfers zijn), maar de beweging. Alleen personen met genoeg volume in beide vensters.
+function bouwStijgersDalers(rijen, trendInfo) {
+  if (!trendInfo) return '';
+  const metTrend = rijen
+    .map(r => ({ r, t: trendInfo.trends.get(`${r.locatie}|${r.merk}|${r.medewerker}`) }))
+    .filter(x => x.t);
+  if (metTrend.length === 0) return '';
+
+  const stijgers = metTrend.filter(x => x.t.verschil > 0).sort((a, b) => b.t.verschil - a.t.verschil).slice(0, 3);
+  const dalers = metTrend.filter(x => x.t.verschil < 0).sort((a, b) => a.t.verschil - b.t.verschil).slice(0, 3);
+  if (stijgers.length === 0 && dalers.length === 0) return '';
+
+  const w = trendInfo.vensterLengte;
+  const periodeTekst = `laatste ${w} ${w === 1 ? 'periode' : 'periodes'} (week ${trendInfo.recentWeken[0]}–${trendInfo.recentWeken[trendInfo.recentWeken.length - 1]}) t.o.v. de ${w} ${w === 1 ? 'periode' : 'periodes'} daarvoor (week ${trendInfo.eerderWeken[0]}–${trendInfo.eerderWeken[trendInfo.eerderWeken.length - 1]})`;
+
+  const regel = (x, kleur, teken) =>
+    `<li style="margin-bottom:3px;"><strong>${x.r.medewerker}</strong>: ${x.t.eerderPct}% → ${x.t.recentPct}% <span style="color:${kleur};font-weight:700;">(${teken}${Math.abs(x.t.verschil)} procentpunt)</span></li>`;
+
+  let html = `<p style="margin-bottom:4px;"><strong>Trend verzekeringen</strong> — ${periodeTekst}:</p>`;
+  if (stijgers.length > 0) {
+    html += `<p style="margin:6px 0 2px;">📈 Vooruit:</p><ul style="margin:0 0 8px;padding-left:22px;">${stijgers.map(x => regel(x, '#1f8a5f', '+')).join('')}</ul>`;
+  }
+  if (dalers.length > 0) {
+    html += `<p style="margin:6px 0 2px;">📉 Achteruit:</p><ul style="margin:0 0 8px;padding-left:22px;">${dalers.map(x => regel(x, '#c0392b', '−')).join('')}</ul>`;
+  }
+  return html;
+}
+
+// Vergelijking met vorig jaar op hetzelfde punt in het jaar (zelfde weeknummer). Werkt alleen
+// als er rapportages van vorig jaar in de geschiedenis zitten — de PDF zelf bevat géén
+// vorig-jaar-cijfers per medewerker, dus dit kan niet uit één upload komen.
+function bouwVorigJaar(rijen, vorigJaarSnapshot, isoWeek) {
+  if (!vorigJaarSnapshot) return '';
+  const vorigMap = new Map();
+  vorigJaarSnapshot.rijen.forEach(r => vorigMap.set(`${r.locatie}|${r.merk}|${r.medewerker}`, r));
+
+  const nuVerz = rijen.reduce((s, r) => s + r.totaal, 0);
+  const nuAfl = rijen.reduce((s, r) => s + r.afleveringen, 0);
+  let vjVerz = 0, vjAfl = 0, gevonden = 0;
+  rijen.forEach(r => {
+    const p = vorigMap.get(`${r.locatie}|${r.merk}|${r.medewerker}`);
+    if (!p) return;
+    gevonden++; vjVerz += p.totaal; vjAfl += p.afleveringen;
+  });
+  if (gevonden === 0 || vjAfl === 0 || nuAfl === 0) return '';
+
+  const nuPct = Math.round((nuVerz / nuAfl) * 100);
+  const vjPct = Math.round((vjVerz / vjAfl) * 100);
+  const verschil = nuPct - vjPct;
+  const kleur = verschil > 0 ? '#1f8a5f' : verschil < 0 ? '#c0392b' : '#6b7280';
+  const teken = verschil > 0 ? '+' : verschil < 0 ? '−' : '';
+  const kanttekening = gevonden < rijen.length ? ` (op basis van de ${gevonden} van de ${rijen.length} teamleden die er vorig jaar ook al waren)` : '';
+
+  return `<p><strong>T.o.v. vorig jaar:</strong> op ditzelfde moment in ${vorigJaarSnapshot.isoJaar} (week ${vorigJaarSnapshot.isoWeek}) stond het team op ${vjPct}% verzekeringsconversie, nu op ${nuPct}% <span style="color:${kleur};font-weight:700;">(${teken}${Math.abs(verschil)} procentpunt)</span>${kanttekening}.</p>`;
+}
+
+// ⭐ Positieve tegenhanger van het aandachtspunt: wie scoorde deze periode de meeste verzekeringen.
+// Alleen mogelijk (en zinvol) zodra er periodecijfers zijn.
+function bouwUitblinker(rijen) {
+  const kandidaten = rijen.filter(r => r.weekVerz !== null && r.weekVerz > 0);
+  if (kandidaten.length === 0) return '';
+  const max = Math.max(...kandidaten.map(r => r.weekVerz));
+  const toppers = kandidaten.filter(r => r.weekVerz === max).map(r => r.medewerker);
+  return `<p>⭐ <strong>Uitblinker${toppers.length > 1 ? 's' : ''} deze periode:</strong> ${toppers.join(' & ')} — ${max} ${max === 1 ? 'verzekering' : 'verzekeringen'} erbij.</p>`;
+}
+
+// "Aandachtspunt": wie leverde af zonder dat er een verzekering ÓF financiering aan gekoppeld
+// werd. Met periodecijfers is dit een scherp signaal; zonder geschiedenis (eerste upload)
+// valt het terug op de jaarstand. Alleen geclaimd wanneer beide totalen hard op 0 staan —
+// dat is een feit uit de aggregaten, geen schatting.
+function bouwAandachtspunt(rijen, heeftWeek) {
+  if (heeftWeek) {
+    const lijst = rijen.filter(r => r.weekAfl > 0 && r.weekVerz === 0 && r.weekFin === 0);
+    if (lijst.length === 0) return '';
+    const namen = lijst.map(r => `${r.medewerker} (${r.weekAfl} ${r.weekAfl === 1 ? 'aflevering' : 'afleveringen'})`).join(', ');
+    return `<p><strong>Aandachtspunt:</strong> ${namen} — leverde deze periode af zonder gekoppelde verzekering of financiering.</p>`;
+  }
+  const nulOpBeide = rijen.filter(r => r.afleveringen > 0 && r.totaal === 0 && r.financAantal === 0);
+  if (nulOpBeide.length === 0) return '';
+  const namen = nulOpBeide.map(r => `${r.medewerker} (${r.afleveringen} ${r.afleveringen === 1 ? 'aflevering' : 'afleveringen'})`).join(', ');
+  return `<p><strong>Aandachtspunt:</strong> ${namen} — dit jaar nog zonder gekoppelde verzekering of financiering.</p>`;
+}
+
+// Vergelijkt een team met alle andere teams uit dezelfde upload — dit is de toegevoegde waarde
+// t.o.v. gewoon de PDF doorsturen: een teamleider die alleen zijn eigen sectie leest, ziet zelf
+// niet waar hij t.o.v. de rest staat. Kleine teams (weinig afleveringen) tellen bewust niet mee
+// in de ranking — een team met 1 aflevering kan anders toevallig op 0% of 100% conversie staan.
+const RANKING_DREMPEL_AFLEVERINGEN = 3;
+
+function berekenTeamRanking(teams, teamNaam) {
+  const overzicht = Object.entries(teams).map(([naam, rijen]) => {
+    const totaalPolissen = rijen.reduce((s, r) => s + r.totaal, 0);
+    const totaalAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
+    return { naam, totaalPolissen, totaalAfleveringen, pct: totaalAfleveringen > 0 ? totaalPolissen / totaalAfleveringen : 0 };
+  });
+
+  const bedrijfTotaalPolissen = overzicht.reduce((s, t) => s + t.totaalPolissen, 0);
+  const bedrijfTotaalAfleveringen = overzicht.reduce((s, t) => s + t.totaalAfleveringen, 0);
+  const bedrijfsGemiddelde = bedrijfTotaalAfleveringen > 0 ? bedrijfTotaalPolissen / bedrijfTotaalAfleveringen : 0;
+
+  const gerankt = overzicht.filter(t => t.totaalAfleveringen >= RANKING_DREMPEL_AFLEVERINGEN).sort((a, b) => b.pct - a.pct);
+  const rangIdx = gerankt.findIndex(t => t.naam === teamNaam);
+
+  return {
+    rang: rangIdx === -1 ? null : rangIdx + 1,
+    totaalTeams: gerankt.length,
+    bedrijfsGemiddelde,
+  };
+}
+
+function genereerTeamMail(teamNaam) {
+  const rijen = teams[teamNaam];
+  const eindeWeek = formatDatum(isoWeekNaarDatum(huidigeData.isoJaar, huidigeData.isoWeek, 7));
+  const ranking = berekenTeamRanking(teams, teamNaam);
+  const heeftWeek = huidigeData.heeftWeek;
+
+  const teamAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
+  const teamPolissen = rijen.reduce((s, r) => s + r.totaal, 0);
+  const teamPct = teamAfleveringen > 0 ? Math.round((teamPolissen / teamAfleveringen) * 100) : 0;
+
+  // de PDF bevat per medewerker alleen jaarstanden — benoem dat eerlijk, en toon pas
+  // periodecijfers zodra er een vorige upload is om tegen af te zetten
+  const intro = heeftWeek
+    ? `<p>Hierbij de scores over de afgelopen periode (t/m week ${huidigeData.isoWeek}, ${eindeWeek}): wat er deze periode bij kwam, plus de jaarstand per persoon.</p>`
+    : `<p>Hierbij de tussenstand tot en met week ${huidigeData.isoWeek} (t/m ${eindeWeek}). Alle cijfers zijn jaartotalen; vanaf de volgende update staan hier ook de cijfers over de afgelopen periode bij.</p>`;
+
+  const vergelijkingRegel = ranking.rang
+    ? `<p>Ter vergelijking: met ${teamPct}% verzekeringsconversie (jaarcijfer) staat jullie team op plek ${ranking.rang} van de ${ranking.totaalTeams} teams (bedrijfsgemiddelde: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`
+    : `<p>Te weinig afleveringen voor een zinvolle vergelijking met andere teams (bedrijfsgemiddelde conversie: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`;
+
+  const doelPct = (rijen[0] && rijen[0].verzDoel) ? rijen[0].verzDoel : 25;
+  const grafiekUrl = bouwTeamGrafiek(teamNaam, huidigeData.geschiedenis, huidigeData.isoJaar, doelPct);
+  const grafiekSectie = grafiekUrl
+    ? `<p style="margin-bottom:2px;"><strong>Verloop verzekeringsconversie per periode</strong></p><img src="${grafiekUrl}" style="max-width:100%;border:1px solid #dde3ed;border-radius:4px;margin-bottom:14px;">`
+    : '';
+
+  const html = `
+<p>Hoi team ${teamNaam},</p>
+${intro}
+${bouwTeamTabel(rijen, heeftWeek)}
+${vergelijkingRegel}
+${bouwStijgersDalers(rijen, huidigeData.trendInfo)}
+${grafiekSectie}
+${bouwVorigJaar(rijen, huidigeData.vorigJaar, huidigeData.isoWeek)}
+${heeftWeek ? bouwUitblinker(rijen) : ''}
+${bouwAandachtspunt(rijen, heeftWeek)}
+<p>Groet,<br>Jurgen</p>`;
+
+  el('mail-preview').innerHTML = html;
+  el('veld-onderwerp').value = `Scores ${teamNaam} — t/m week ${huidigeData.isoWeek} (${huidigeData.isoJaar})`;
+}
+
+/* ============================================================
+   UI-KOPPELING
+   ============================================================ */
+function el(id) { return document.getElementById(id); }
+
+el('input-pdf').addEventListener('change', () => {
+  const bestanden = el('input-pdf').files;
+  if (!bestanden || bestanden.length === 0) return;
+  el('chip-pdf-naam').textContent = bestanden.length === 1
+    ? bestanden[0].name
+    : `${bestanden.length} rapportages geselecteerd`;
+  el('chip-pdf').style.display = '';
+  el('dropzone-pdf').style.display = 'none';
+  el('btn-verwerk').disabled = false;
+});
+el('chip-pdf-remove').addEventListener('click', () => {
+  el('input-pdf').value = '';
+  el('chip-pdf').style.display = 'none';
+  el('dropzone-pdf').style.display = '';
+  el('btn-verwerk').disabled = true;
+});
+
+el('btn-verwerk').addEventListener('click', async () => {
+  const bestanden = [...el('input-pdf').files];
+  if (bestanden.length === 0) return;
+  el('btn-verwerk').disabled = true;
+  try {
+    // Alle bestanden parsen, dan op weeknummer sorteren — de volgorde waarin ze gekozen zijn
+    // (of hoe ze heten) zegt niets, het weeknummer uit de PDF zelf is leidend.
+    const geparsed = [];
+    const overgeslagen = [];
+    for (let i = 0; i < bestanden.length; i++) {
+      el('btn-verwerk').textContent = bestanden.length > 1
+        ? `Bezig… (${i + 1}/${bestanden.length})`
+        : 'Bezig met verwerken…';
+      const data = await parseSalesrapportagePdf(bestanden[i]);
+      if (!data.isoJaar || !data.isoWeek) { overgeslagen.push(bestanden[i].name); continue; }
+      data.rijen = filterShowroomVerkopers(koppelFinancieringen(data.verzekeringenRijen, data.financieringenRijen));
+      geparsed.push(data);
+    }
+
+    if (geparsed.length === 0) {
+      alert('Kon uit geen enkel bestand een weeknummer halen. Controleer of dit de juiste salesrapportages zijn.');
+      return;
+    }
+    if (overgeslagen.length > 0) {
+      alert(`${overgeslagen.length} bestand(en) overgeslagen (geen weeknummer gevonden):\n${overgeslagen.join('\n')}`);
+    }
+
+    geparsed.sort((a, b) => (a.isoJaar - b.isoJaar) || (a.isoWeek - b.isoWeek));
+
+    // eerst álle snapshots wegschrijven (oud → nieuw), zodat de trendberekening hieronder
+    // de volledige geschiedenis ziet, ook als er in één keer meerdere periodes zijn geüpload
+    geparsed.forEach(d => bewaarSnapshot({
+      isoJaar: d.isoJaar, isoWeek: d.isoWeek,
+      rijen: d.rijen.map(r => ({ locatie: r.locatie, merk: r.merk, medewerker: r.medewerker, totaal: r.totaal, afleveringen: r.afleveringen, financAantal: r.financAantal })),
+    }));
+
+    // de nieuwste upload is waar de mail over gaat
+    huidigeData = geparsed[geparsed.length - 1];
+    huidigeData.geschiedenis = laadGeschiedenis();
+    const vorige = vindVorigeUpload(huidigeData.geschiedenis, huidigeData.isoJaar, huidigeData.isoWeek);
+    huidigeData.vorige = vorige;
+    huidigeData.heeftWeek = !!vorige;
+    huidigeData.trendInfo = berekenPersoonsTrends(huidigeData.geschiedenis, huidigeData.isoJaar);
+    huidigeData.vorigJaar = vindVorigJaarSnapshot(huidigeData.geschiedenis, huidigeData.isoJaar, huidigeData.isoWeek);
+    werkGeschiedenisInfoBij();
+
+    teams = groepeerInTeams(berekenWeekRijen(huidigeData.rijen, vorige));
+    const teamNamen = Object.keys(teams).sort();
+
+    const select = el('select-team');
+    select.innerHTML = teamNamen.map(naam => `<option value="${naam}">${naam} (${teams[naam].length})</option>`).join('');
+    el('status-line').textContent =
+      (geparsed.length > 1 ? `${geparsed.length} rapportages verwerkt (week ${geparsed[0].isoWeek} t/m ${huidigeData.isoWeek}). ` : '') +
+      `${teamNamen.length} teams in week ${huidigeData.isoWeek} (${huidigeData.isoJaar}). ` +
+      (vorige ? `Periodecijfers t.o.v. week ${vorige.isoWeek}.` : 'Nog geen eerdere upload — periodecijfers verschijnen zodra er een tweede rapportage is.');
+    el('panel-teams').style.display = '';
+
+    if (teamNamen.length > 0) genereerTeamMail(teamNamen[0]);
+  } catch (err) {
+    console.error(err);
+    alert('Er ging iets mis bij het verwerken: ' + err.message);
+  } finally {
+    el('btn-verwerk').disabled = false;
+    el('btn-verwerk').textContent = 'Verwerk bestand(en)';
+  }
+});
+
+function werkGeschiedenisInfoBij() {
+  const g = laadGeschiedenis();
+  if (g.length === 0) { el('geschiedenis-info').textContent = 'Nog geen geschiedenis opgeslagen.'; return; }
+  const eerste = g[0], laatste = g[g.length - 1];
+  el('geschiedenis-info').textContent = g.length === 1
+    ? `Geschiedenis: 1 rapportage (week ${eerste.isoWeek}, ${eerste.isoJaar}).`
+    : `Geschiedenis: ${g.length} rapportages (week ${eerste.isoWeek}/${eerste.isoJaar} t/m week ${laatste.isoWeek}/${laatste.isoJaar}).`;
+}
+
+el('btn-wis-geschiedenis').addEventListener('click', () => {
+  if (!confirm('Alle opgeslagen rapportage-geschiedenis wissen? Periode- en trendcijfers zijn daarna pas weer beschikbaar na meerdere nieuwe uploads.')) return;
+  wisGeschiedenis();
+  werkGeschiedenisInfoBij();
+});
+
+werkGeschiedenisInfoBij();
+
+el('select-team').addEventListener('change', () => genereerTeamMail(el('select-team').value));
+
+/* ============================================================
+   KOPIËREN VOOR OUTLOOK / .EML DOWNLOAD — zelfde techniek als fi-update-mailtool
+   ============================================================ */
+el('btn-kopieren').addEventListener('click', async () => {
+  const html = el('mail-preview').innerHTML;
+  const tekst = el('mail-preview').innerText;
+  const statusEl = el('kopieer-status');
+  try {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        'text/html': new Blob([`<html><body style="font-family:Calibri,Arial,sans-serif;font-size:14px;">${html}</body></html>`], { type: 'text/html' }),
+        'text/plain': new Blob([tekst], { type: 'text/plain' }),
+      }),
+    ]);
+    statusEl.style.color = 'var(--goed)';
+    statusEl.textContent = '✓ Gekopieerd';
+  } catch (err) {
+    console.error(err);
+    try {
+      await navigator.clipboard.writeText(tekst);
+      statusEl.style.color = '';
+      statusEl.textContent = 'Alleen platte tekst gekopieerd';
+    } catch (err2) {
+      statusEl.style.color = '';
+      statusEl.textContent = 'Kopiëren mislukt: ' + err2.message;
+    }
+  }
+  setTimeout(() => { statusEl.textContent = ''; }, 4000);
+});
+
+el('btn-download').addEventListener('click', () => {
+  const naarCrlf = (s) => s.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+  const html = naarCrlf(el('mail-preview').innerHTML);
+  const platteTekst = naarCrlf(el('mail-preview').innerText);
+  const aan = el('veld-aan').value.trim();
+  const onderwerp = el('veld-onderwerp').value.trim();
+  const grens = '----=_TeamScoresMail';
+
+  const eml = [
+    `To: ${aan}`,
+    `Subject: ${onderwerp}`,
+    'X-Unsent: 1',
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/alternative; boundary="${grens}"`,
+    '',
+    `--${grens}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    platteTekst,
+    '',
+    `--${grens}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    `<html><body style="font-family:Calibri,Arial,sans-serif;font-size:14px;">${html}</body></html>`,
+    '',
+    `--${grens}--`,
+  ].join('\r\n');
+
+  const blob = new Blob([eml], { type: 'message/rfc822' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${onderwerp.replace(/[^a-z0-9]+/gi, '-') || 'team-scores'}.eml`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
