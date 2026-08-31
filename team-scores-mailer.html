@@ -439,6 +439,135 @@ function vindVorigJaarSnapshot(geschiedenis, isoJaar, isoWeek) {
 }
 
 /* ============================================================
+   KALENDERMAAND — de rapportage is elke week getagd, maar de F&I Manager
+   stuurt maandelijks; hij wil "deze maand" naast "YTD" zien, niet alleen
+   het willekeurige verschil tussen twee uploads. Een snapshot krijgt zijn
+   kalendermaand op basis van de zondag van z'n ISO-week.
+   ============================================================ */
+function kalenderMaandVan(isoJaar, isoWeek) {
+  const d = isoWeekNaarDatum(isoJaar, isoWeek, 7);
+  return { jaar: d.getUTCFullYear(), maand: d.getUTCMonth() };
+}
+
+const MAANDNAMEN = ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december'];
+
+// Vindt de meest recente snapshot van vóór de kalendermaand van de huidige upload — dat is de
+// juiste nulmeting voor "deze maand", ongeacht hoe vaak er deze maand al is geüpload (bij meerdere
+// uploads binnen dezelfde maand zou "vorige upload" een deel-maand geven; dit geeft altijd de hele
+// maand tot nu toe).
+function vindMaandBasis(geschiedenis, huidigJaar, huidigWeek) {
+  const { jaar: hJaar, maand: hMaand } = kalenderMaandVan(huidigJaar, huidigWeek);
+  let beste = null, besteDatum = null;
+  for (const snap of geschiedenis) {
+    if (snap.isoJaar === huidigJaar && snap.isoWeek === huidigWeek) continue;
+    const { jaar, maand } = kalenderMaandVan(snap.isoJaar, snap.isoWeek);
+    const voorDezeMaand = jaar < hJaar || (jaar === hJaar && maand < hMaand);
+    if (!voorDezeMaand) continue;
+    const datum = isoWeekNaarDatum(snap.isoJaar, snap.isoWeek, 7);
+    if (!beste || datum > besteDatum) { beste = snap; besteDatum = datum; }
+  }
+  return beste;
+}
+
+// Zet rijen om naar maandcijfers tov de maandbasis. Belangrijk: als de basis uit een ANDER jaar
+// komt dan de huidige upload, is de YTD-teller in de bron tussentijds gereset — dan aftrekken zou
+// een gigantische schijn-daling geven die niets met de werkelijkheid te maken heeft (dit was
+// precies de jaargrens-bug uit de audit). In dat geval — of als er helemaal geen basis is — IS de
+// YTD-stand zelf het maandcijfer: het is dan de eerste maand met data (dit jaar).
+// Net als bij bouwWeekDeltas wordt een negatieve delta niet op 0 geklemd maar gemarkeerd als
+// `maandCorrectie`, zodat een annulering zichtbaar blijft i.p.v. te verdwijnen.
+function berekenMaandRijen(rijen, maandBasis, huidigJaar) {
+  if (!maandBasis || maandBasis.isoJaar !== huidigJaar) {
+    return rijen.map(r => ({
+      ...r, maandVerz: r.totaal, maandAfl: r.afleveringen, maandFin: r.financAantal,
+      maandCorrectie: false, eersteMaandVanJaar: true,
+    }));
+  }
+  const basisMap = new Map();
+  maandBasis.rijen.forEach(r => basisMap.set(`${r.locatie}|${r.merk}|${r.medewerker}`, r));
+  return rijen.map(r => {
+    const p = basisMap.get(`${r.locatie}|${r.merk}|${r.medewerker}`);
+    const maandVerz = r.totaal - (p ? p.totaal : 0);
+    const maandAfl = r.afleveringen - (p ? p.afleveringen : 0);
+    let maandFin = null;
+    if (r.financAantal !== null) {
+      const pFin = p ? p.financAantal : 0;
+      if (pFin !== null) maandFin = r.financAantal - pFin;
+    }
+    return {
+      ...r, maandVerz, maandAfl, maandFin,
+      maandCorrectie: maandVerz < 0 || maandAfl < 0 || (maandFin !== null && maandFin < 0),
+      eersteMaandVanJaar: false,
+    };
+  });
+}
+
+// Bouwt de volledige maandreeks uit de geschiedenis: per kalendermaand de laatste snapshot van
+// die maand (het "eindstand"-cijfer), met de maandcijfers al berekend tov de vorige maand in de
+// reeks. Dit is de basis voor trendclassificatie (classificeerTrend) — die kijkt naar meerdere
+// maanden achter elkaar, niet naar twee losse uploads.
+function bouwMaandReeks(geschiedenis, huidigJaar) {
+  const perMaand = new Map();
+  geschiedenis.forEach(snap => {
+    const { jaar, maand } = kalenderMaandVan(snap.isoJaar, snap.isoWeek);
+    const key = `${jaar}-${maand}`;
+    const bestaand = perMaand.get(key);
+    if (!bestaand || isoWeekNaarDatum(snap.isoJaar, snap.isoWeek, 7) > isoWeekNaarDatum(bestaand.isoJaar, bestaand.isoWeek, 7)) {
+      perMaand.set(key, snap);
+    }
+  });
+  const reeks = [...perMaand.entries()]
+    .map(([key, snap]) => { const [jaar, maand] = key.split('-').map(Number); return { jaar, maand, snap }; })
+    .sort((a, b) => (a.jaar - b.jaar) || (a.maand - b.maand))
+    .filter(m => m.jaar === huidigJaar || m.jaar === huidigJaar - 1); // vorig jaar alleen als context, niet verder terug
+
+  return reeks.map((m, i) => {
+    const vorige = i > 0 ? reeks[i - 1].snap : null;
+    const basis = (vorige && vorige.isoJaar === m.snap.isoJaar) ? vorige : null;
+    const rijen = berekenMaandRijen(m.snap.rijen, basis, m.snap.isoJaar);
+    return { jaar: m.jaar, maand: m.maand, isoWeek: m.snap.isoWeek, isoJaar: m.snap.isoJaar, rijen };
+  }).filter(m => m.jaar === huidigJaar); // de vorig-jaar-maand diende alleen als basis voor januari
+}
+
+// Classificeert een chronologische reeks percentages (null toegestaan voor ontbrekende maanden)
+// tot een pijl + feitelijk label. Drempels: >5pp verschil = "duidelijk", anders "licht"; 3+
+// maanden achtereen dezelfde richting = "structureel" (genoemd met het aantal maanden). Dit is
+// een signaal, geen interpretatie — de tool zegt "3e maand op rij dalend", niet "moet ingrijpen".
+const TREND_DUIDELIJK_DREMPEL_PP = 5;
+const TREND_STRUCTUREEL_MAANDEN = 3;
+
+function classificeerTrend(pctReeks) {
+  const geldig = pctReeks.filter(p => p !== null);
+  if (geldig.length < 2) return { pijl: '→', label: 'onvoldoende maanden voor een trend', structureel: false };
+
+  const verschillen = [];
+  for (let i = 1; i < geldig.length; i++) verschillen.push(geldig[i] - geldig[i - 1]);
+  const laatsteVerschil = verschillen[verschillen.length - 1];
+
+  let streak = 1;
+  for (let i = verschillen.length - 1; i > 0; i--) {
+    const richtingHuidig = Math.sign(verschillen[i]);
+    const richtingVorig = Math.sign(verschillen[i - 1]);
+    if (richtingHuidig !== 0 && richtingHuidig === richtingVorig) streak++;
+    else break;
+  }
+
+  let pijl, richting;
+  if (laatsteVerschil > TREND_DUIDELIJK_DREMPEL_PP) { pijl = '↑'; richting = 'duidelijk verbeterend'; }
+  else if (laatsteVerschil > 0) { pijl = '↗'; richting = 'licht verbeterend'; }
+  else if (laatsteVerschil === 0) { pijl = '→'; richting = 'stabiel'; }
+  else if (laatsteVerschil > -TREND_DUIDELIJK_DREMPEL_PP) { pijl = '↘'; richting = 'licht dalend'; }
+  else { pijl = '↓'; richting = 'duidelijk dalend'; }
+
+  const structureel = streak >= TREND_STRUCTUREEL_MAANDEN && laatsteVerschil !== 0;
+  const label = structureel
+    ? `${streak}e maand op rij ${laatsteVerschil > 0 ? 'stijgend' : 'dalend'}`
+    : richting;
+
+  return { pijl, label, structureel, verschil: Math.round(laatsteVerschil) };
+}
+
+/* ============================================================
    ORGANISATIESTRUCTUUR: teamleiders (locatie + merk) en salesmanagers
    (merk-breed, over alle vestigingen). Beide typen zijn selecteerbaar; een
    salesmanager ziet de opgetelde verkopers van alle teams met dat merk.
@@ -619,10 +748,24 @@ function berekenAfwijking(r) {
   return Math.min(...afwijkingen);
 }
 
+// Maand-geschiedenis van één specifieke persoon, voor trendclassificatie in de highlight-zinnen
+// hieronder. Een correctiemaand of een maand zonder afleveringen levert null op (zie
+// berekenMaandRijen) — classificeerTrend slaat null-waarden vanzelf over.
+function bouwPersoonMaandTrend(sleutel) {
+  if (!huidigeData || !huidigeData.maandReeks) return null;
+  const reeks = huidigeData.maandReeks.map(m => {
+    const r = m.rijen.find(x => `${x.locatie}|${x.merk}|${x.medewerker}` === sleutel);
+    if (!r || r.maandCorrectie || r.maandAfl <= 0) return null;
+    return Math.round((r.maandVerz / r.maandAfl) * 100);
+  });
+  return classificeerTrend(reeks);
+}
+
 // Eén zin per persoon die verzekering én financiering combineert — dit vervangt de losse
 // "trend verzekeringen"/"aandachtspunt"-secties van eerdere versies, die financiering volledig
-// buiten beeld lieten. Alle detail (trend, geschiedenis) staat in de interactieve bijlage; hier
-// gaat het puur om de huidige jaarstand tov doel, kort samengevat.
+// buiten beeld lieten. De hoofdzin gaat over de huidige jaarstand tov doel; is er een structurele
+// maandtrend (3+ maanden op rij dezelfde kant op), dan wordt dat als aparte, feitelijke zin
+// toegevoegd — nooit als advies, alleen als signaal ("3e maand op rij dalend").
 function bouwCombinatieZin(r) {
   const verzPct = r.afleveringen > 0 ? Math.round((r.totaal / r.afleveringen) * 100) : null;
   const verzDoel = r.verzDoel ?? 25;
@@ -634,15 +777,21 @@ function bouwCombinatieZin(r) {
   const verzDeel = `verzekering (${verzPct}%, doel ${verzDoel}%)`;
   const financDeel = heeftFinanc ? `financiering (${financPct}%, doel ${r.financDoel}%)` : null;
 
+  let zin;
   if (verzPct !== null && financDeel) {
-    if (verzOpKoers && financOpKoers) return `<strong>${r.medewerker}</strong>: op koers voor zowel ${financDeel} als ${verzDeel}.`;
-    if (verzOpKoers && !financOpKoers) return `<strong>${r.medewerker}</strong>: sterk op verzekering (${verzPct}%, doel gehaald), blijft achter op ${financDeel}.`;
-    if (!verzOpKoers && financOpKoers) return `<strong>${r.medewerker}</strong>: sterk op financiering (${financPct}%, doel gehaald), blijft achter op ${verzDeel}.`;
-    return `<strong>${r.medewerker}</strong>: blijft achter op zowel ${financDeel} als ${verzDeel}.`;
+    if (verzOpKoers && financOpKoers) zin = `<strong>${r.medewerker}</strong>: op koers voor zowel ${financDeel} als ${verzDeel}.`;
+    else if (verzOpKoers && !financOpKoers) zin = `<strong>${r.medewerker}</strong>: sterk op verzekering (${verzPct}%, doel gehaald), blijft achter op ${financDeel}.`;
+    else if (!verzOpKoers && financOpKoers) zin = `<strong>${r.medewerker}</strong>: sterk op financiering (${financPct}%, doel gehaald), blijft achter op ${verzDeel}.`;
+    else zin = `<strong>${r.medewerker}</strong>: blijft achter op zowel ${financDeel} als ${verzDeel}.`;
+  } else {
+    const enige = verzPct !== null ? verzDeel : financDeel;
+    const opKoers = verzPct !== null ? verzOpKoers : financOpKoers;
+    zin = `<strong>${r.medewerker}</strong>: ${opKoers ? 'op koers voor' : 'blijft achter op'} ${enige}.`;
   }
-  const enige = verzPct !== null ? verzDeel : financDeel;
-  const opKoers = verzPct !== null ? verzOpKoers : financOpKoers;
-  return `<strong>${r.medewerker}</strong>: ${opKoers ? 'op koers voor' : 'blijft achter op'} ${enige}.`;
+
+  const trend = bouwPersoonMaandTrend(`${r.locatie}|${r.merk}|${r.medewerker}`);
+  if (trend && trend.structureel) zin += ` <span style="color:#6b7280;">(verzekering ${trend.pijl} ${trend.label})</span>`;
+  return zin;
 }
 
 // 5 afleveringen als ondergrens (i.p.v. eerder 3) — bij minder is een percentage te grillig om
@@ -672,14 +821,63 @@ function bouwHighlights(rijen) {
   return html;
 }
 
-// Financieringspercentage komt rechtstreeks uit de rapportage met een eigen, niet-gepubliceerde
-// noemer (zie parseFinancieringenTabel) — daarom telt de teamregel alleen het aantal, geen %.
-function bouwTeamTotaalRegel(rijen) {
-  const totaalAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
-  const totaalVerz = rijen.reduce((s, r) => s + r.totaal, 0);
-  const verzPct = totaalAfleveringen > 0 ? Math.round((totaalVerz / totaalAfleveringen) * 100) : null;
-  const totaalFinanc = rijen.reduce((s, r) => s + (r.financAantal || 0), 0);
-  return `<p>Jaartotaal: ${totaalVerz} verzekeringen op ${totaalAfleveringen} afleveringen${verzPct !== null ? ` (${verzPct}%)` : ''}, en ${totaalFinanc} financieringen (financieringspercentage verschilt per merk en is alleen per persoon zinvol — zie bijlage).</p>`;
+// Team-brede maandreeks (voor trendclassificatie), gefilterd op wie er op dat moment onder deze
+// manager viel — dezelfde locatie/merk/overrides-regels als vandaag worden ook met terugwerkende
+// kracht op historische maanden toegepast (die regels wijzigen zelf niet met terugwerkende kracht).
+function bouwManagerMaandReeks(maandReeks, managerNaam) {
+  return maandReeks.map(m => {
+    const rijenVoorManager = m.rijen.filter(r => bepaalManagersVoorRij(r).includes(managerNaam));
+    const afl = rijenVoorManager.reduce((s, r) => s + r.maandAfl, 0);
+    const verz = rijenVoorManager.reduce((s, r) => s + r.maandVerz, 0);
+    const heeftCorrectie = rijenVoorManager.some(r => r.maandCorrectie);
+    return { jaar: m.jaar, maand: m.maand, pct: (!heeftCorrectie && afl > 0) ? Math.round((verz / afl) * 100) : null };
+  });
+}
+
+// Bouwt de twee KPI-kaarten (verzekering, financiering) met Maand + YTD naast elkaar — dit is het
+// structurele gat dat de audit blootlegde: YTD alleen reageert te traag om te zien of iemand
+// recent omslaat. Financiering krijgt bewust geen %-trend en geen teamgemiddeld percentage (zie
+// parseFinancieringenTabel — de noemer is onbekend); wel een telling van wie op doel zit.
+// Inline styles overal, want dit landt in Outlook zonder de <style> van deze pagina.
+function bouwKpiBoxen(rijen, managerNaam) {
+  const doelPct = (rijen[0] && rijen[0].verzDoel) ? rijen[0].verzDoel : 25;
+
+  const maandAfl = rijen.reduce((s, r) => s + r.maandAfl, 0);
+  const maandVerz = rijen.reduce((s, r) => s + r.maandVerz, 0);
+  const heeftMaandCorrectie = rijen.some(r => r.maandCorrectie);
+  const maandPct = (!heeftMaandCorrectie && maandAfl > 0) ? Math.round((maandVerz / maandAfl) * 100) : null;
+  const eersteMaand = rijen.some(r => r.eersteMaandVanJaar);
+
+  const ytdAfl = rijen.reduce((s, r) => s + r.afleveringen, 0);
+  const ytdVerz = rijen.reduce((s, r) => s + r.totaal, 0);
+  const ytdPct = ytdAfl > 0 ? Math.round((ytdVerz / ytdAfl) * 100) : null;
+
+  const maandReeks = bouwManagerMaandReeks(huidigeData.maandReeks, managerNaam);
+  const trend = classificeerTrend(maandReeks.map(m => m.pct));
+  const maandTekst = heeftMaandCorrectie ? 'correctie (zie bijlage)' : (maandPct !== null ? `${maandPct}%` : '–');
+
+  const boxStijl = 'flex:1;min-width:210px;background:#eef1f8;border-radius:8px;padding:12px 14px;';
+  const naamStijl = 'font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#6b7280;margin-bottom:6px;';
+  const regelStijl = 'display:flex;justify-content:space-between;font-size:13.5px;padding:2px 0;';
+
+  const verzBox = `<div style="${boxStijl}">
+    <div style="${naamStijl}">Verzekering — doel ${doelPct}%</div>
+    <div style="${regelStijl}"><span>${huidigeData.huidigeMaandNaam}${eersteMaand ? ' (1e maand)' : ''}</span><span><strong>${maandTekst}${maandPct !== null ? ` ${trend.pijl}` : ''}</strong></span></div>
+    <div style="${regelStijl}"><span>YTD</span><span><strong>${ytdPct !== null ? `${ytdPct}%` : '–'}</strong>${ytdPct !== null ? ` (${ytdPct - doelPct > 0 ? '+' : ''}${ytdPct - doelPct}pp)` : ''}</span></div>
+  </div>`;
+
+  const financMetDoel = rijen.filter(r => r.financAantal !== null && r.financDoel !== null);
+  const financOpDoel = financMetDoel.filter(r => (r.financRealisatie !== null ? r.financRealisatie : 0) >= r.financDoel).length;
+  const maandFinTotaal = rijen.reduce((s, r) => s + (r.maandFin || 0), 0);
+  const ytdFinTotaal = rijen.reduce((s, r) => s + (r.financAantal || 0), 0);
+
+  const financBox = `<div style="${boxStijl}">
+    <div style="${naamStijl}">Financiering</div>
+    <div style="${regelStijl}"><span>${huidigeData.huidigeMaandNaam}</span><span><strong>${maandFinTotaal}</strong></span></div>
+    <div style="${regelStijl}"><span>YTD</span><span><strong>${ytdFinTotaal}</strong>${financMetDoel.length > 0 ? ` — ${financOpDoel}/${financMetDoel.length} op doel` : ''}</span></div>
+  </div>`;
+
+  return { verzBox, financBox, trend };
 }
 
 // Vergelijkt een teamleider/salesmanager met vergelijkbare anderen (zélfde type) — dit is de
@@ -732,29 +930,35 @@ function genereerTeamMail(managerNaam) {
   bouwTeamGrafiek(managerNaam, huidigeData.geschiedenis, huidigeData.isoJaar, doelPct);
 
   const groet = info.type === 'salesmanager'
-    ? `<p>Hoi ${voornaam(managerNaam)},</p><p>Hierbij de ${info.merk}-scores van al je verkopers (alle vestigingen), t/m week ${huidigeData.isoWeek} (${eindeWeek}).</p>`
-    : `<p>Hoi ${voornaam(managerNaam)},</p><p>Hierbij de scores van je team (${info.locatie} ${info.merk}), t/m week ${huidigeData.isoWeek} (${eindeWeek}).</p>`;
+    ? `<p>Hoi ${voornaam(managerNaam)},</p><p>Hierbij de F&I-resultaten van al je ${info.merk}-verkopers (alle vestigingen) over ${huidigeData.huidigeMaandNaam}, met de stand tot nu toe dit jaar.</p>`
+    : `<p>Hoi ${voornaam(managerNaam)},</p><p>Hierbij de F&I-resultaten van je team (${info.locatie} ${info.merk}) over ${huidigeData.huidigeMaandNaam}, met de stand tot nu toe dit jaar.</p>`;
+
+  const { verzBox, financBox, trend } = bouwKpiBoxen(rijen, managerNaam);
+  const kpiRegel = `<div style="display:flex;gap:14px;flex-wrap:wrap;margin:14px 0;">${verzBox}${financBox}</div>`;
+  const trendRegel = `<p>${trend.pijl} Verzekering ${trend.label}.</p>`;
 
   // Getemperd: het gaat om boven/onder het gemiddelde, niet om een wedstrijd — de exacte plek
-  // staat er nog wel bij, maar is niet meer de opener van de zin.
+  // staat er nog wel bij, maar is niet meer de opener van de zin. Onderaan geplaatst, niet
+  // vooraan, zodat de maand-/YTD-cijfers en de trend het eerste zijn wat een lezer ziet.
   const vergelijkingRegel = ranking.rang
     ? (() => {
         const gem = Math.round(ranking.bedrijfsGemiddelde * 100);
         const richting = ranking.eigenPct > gem ? 'boven' : ranking.eigenPct < gem ? 'onder' : 'gelijk aan';
-        return `<p>Met ${ranking.eigenPct}% verzekeringsconversie zit je ${richting} het gemiddelde van ${ranking.vergelijkingsLabel} (${gem}%) — plek ${ranking.rang} van ${ranking.totaalTeams}.</p>`;
+        return `<p style="font-size:12.5px;color:#6b7280;">Ter referentie: met ${ranking.eigenPct}% verzekeringsconversie (YTD) zit je ${richting} het gemiddelde van ${ranking.vergelijkingsLabel} (${gem}%) — plek ${ranking.rang} van ${ranking.totaalTeams}.</p>`;
       })()
-    : `<p>Te weinig afleveringen voor een zinvolle vergelijking met ${ranking.vergelijkingsLabel} (gemiddelde conversie: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`;
+    : `<p style="font-size:12.5px;color:#6b7280;">Te weinig afleveringen voor een zinvolle vergelijking met ${ranking.vergelijkingsLabel} (gemiddelde conversie: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`;
 
   const html = `
 ${groet}
-${bouwTeamTotaalRegel(rijen)}
-${vergelijkingRegel}
+${kpiRegel}
+${trendRegel}
 ${bouwHighlights(rijen)}
-<p style="font-size:12.5px;color:#6b7280;">Het volledige overzicht per verkoper (incl. trend per periode) vind je in de bijgevoegde interactieve rapportage.</p>
+${vergelijkingRegel}
+<p style="font-size:12.5px;color:#6b7280;">Het volledige overzicht per verkoper (incl. maandelijkse trend) vind je in de bijgevoegde interactieve rapportage.</p>
 <p>Groet,<br>Jurgen</p>`;
 
   el('mail-preview').innerHTML = html;
-  el('veld-onderwerp').value = `F&I-scores ${info.type === 'salesmanager' ? info.merk : `${info.locatie} ${info.merk}`} — t/m week ${huidigeData.isoWeek} (${huidigeData.isoJaar})`;
+  el('veld-onderwerp').value = `F&I-resultaten ${info.type === 'salesmanager' ? info.merk : `${info.locatie} ${info.merk}`} — ${huidigeData.huidigeMaandNaam} ${huidigeData.isoJaar}`;
 }
 
 /* ============================================================
@@ -904,6 +1108,16 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
   const teamVerzPct = teamAfleveringen > 0 ? Math.round((teamVerz / teamAfleveringen) * 100) : null;
   const teamFinanc = rijen.reduce((s, r) => s + (r.financAantal || 0), 0);
 
+  // Maandcijfers naast de jaarstand — zie KALENDERMAAND-blok. Een correctie in de maand (negatieve
+  // delta) wordt gemeld i.p.v. als een fout cijfer getoond.
+  const teamMaandAfl = rijen.reduce((s, r) => s + r.maandAfl, 0);
+  const teamMaandVerz = rijen.reduce((s, r) => s + r.maandVerz, 0);
+  const teamMaandFin = rijen.reduce((s, r) => s + (r.maandFin || 0), 0);
+  const teamHeeftMaandCorrectie = rijen.some(r => r.maandCorrectie);
+  const teamMaandPct = (!teamHeeftMaandCorrectie && teamMaandAfl > 0) ? Math.round((teamMaandVerz / teamMaandAfl) * 100) : null;
+  const teamMaandReeks = bouwManagerMaandReeks(data.maandReeks, managerNaam);
+  const teamTrend = classificeerTrend(teamMaandReeks.map(m => m.pct));
+
   const teamPeriodes = bouwWeekDeltas(data.geschiedenis, data.isoJaar);
   const teamLeden = new Set(rijen.map(r => `${r.locatie}|${r.merk}|${r.medewerker}`));
   const teamPunten = teamPeriodes.map(p => {
@@ -938,10 +1152,11 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
   const teamKaart = `
     <div class="kaart">
       <h2>${scopeLabel}</h2>
+      <p style="margin:-4px 0 12px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">${data.huidigeMaandNaam} ${data.isoJaar}${teamMaandPct !== null ? ` · ${teamTrend.pijl} verzekering ${teamTrend.label}` : ''}</p>
       <div class="statrij">
-        <div class="stat"><div class="label">Afleveringen (jaar)</div><div class="waarde">${teamAfleveringen}</div></div>
-        <div class="stat"><div class="label">Verzekeringen (jaar)</div><div class="waarde">${teamVerz}${teamVerzPct !== null ? ` (${teamVerzPct}%)` : ''}</div></div>
-        <div class="stat"><div class="label">Financieringen (jaar)</div><div class="waarde">${teamFinanc}</div>${financIndicatieTekst ? `<div class="voetnoot">${financIndicatieTekst}</div>` : ''}</div>
+        <div class="stat"><div class="label">Afl. — ${data.huidigeMaandNaam} / jaar</div><div class="waarde">${teamMaandAfl} / ${teamAfleveringen}</div></div>
+        <div class="stat"><div class="label">Verzekering — maand / jaar</div><div class="waarde">${teamHeeftMaandCorrectie ? 'correctie' : (teamMaandPct !== null ? `${teamMaandPct}%` : '–')} / ${teamVerzPct !== null ? `${teamVerzPct}%` : '–'}</div></div>
+        <div class="stat"><div class="label">Financiering — maand / jaar</div><div class="waarde">${teamMaandFin} / ${teamFinanc}</div>${financIndicatieTekst ? `<div class="voetnoot">${financIndicatieTekst}</div>` : ''}</div>
       </div>
       <p>${rankingTekst}</p>
       ${vorigJaarTekst}
@@ -997,10 +1212,16 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
       ? `<p class="voetnoot" style="color:var(--fout);">Correctie gedetecteerd in ${correctieWeken.join(', ')} — de YTD-stand daalde tussen twee uploads (bv. een annulering). Die periode(s) zijn als gat in de grafiek getoond in plaats van als (foutieve) nul-activiteit.</p>`
       : '';
 
+    // Maandcijfer + trend naast de jaarstand — zelfde kalendermaand-logica als de teamkaart/mail.
+    const maandPct = (!r.maandCorrectie && r.maandAfl > 0) ? Math.round((r.maandVerz / r.maandAfl) * 100) : null;
+    const persoonTrend = bouwPersoonMaandTrend(sleutel);
+    const maandRegel = `<p style="margin:-4px 0 12px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">${data.huidigeMaandNaam}: verzekering ${r.maandCorrectie ? 'correctie' : (maandPct !== null ? `${maandPct}%` : '–')}${maandPct !== null && persoonTrend ? ` ${persoonTrend.pijl}` : ''} · financiering ${r.maandFin !== null ? r.maandFin : '–'}</p>`;
+
     return `<div class="detail" data-idx="${i}" hidden>
       <div class="kaart">
         <h2>${r.medewerker}${isZelf ? ' <span class="zelf-badge">jij</span>' : ''}</h2>
         ${locatieRegel}
+        ${maandRegel}
         ${indicatiefRegel}
         <div class="statrij">
           <div class="stat">
@@ -1165,8 +1386,18 @@ el('btn-verwerk').addEventListener('click', async () => {
     huidigeData.geschiedenis = laadGeschiedenis();
     const vorige = vindVorigeUpload(huidigeData.geschiedenis, huidigeData.isoJaar, huidigeData.isoWeek);
     huidigeData.vorigJaar = vindVorigJaarSnapshot(huidigeData.geschiedenis, huidigeData.isoJaar, huidigeData.isoWeek);
+
+    // Kalendermaand: "deze maand" tov de laatste stand van vóór de huidige kalendermaand, plus de
+    // volledige maandreeks voor trendclassificatie (zie KALENDERMAAND-blok hierboven).
+    const maandBasis = vindMaandBasis(huidigeData.geschiedenis, huidigeData.isoJaar, huidigeData.isoWeek);
+    huidigeData.rijen = berekenMaandRijen(huidigeData.rijen, maandBasis, huidigeData.isoJaar);
+    huidigeData.maandBasis = maandBasis;
+    huidigeData.maandReeks = bouwMaandReeks(huidigeData.geschiedenis, huidigeData.isoJaar);
+    huidigeData.huidigeMaandNaam = MAANDNAMEN[kalenderMaandVan(huidigeData.isoJaar, huidigeData.isoWeek).maand];
+
     werkGeschiedenisInfoBij();
 
+    // Datacontrole — vóór verzending, alleen voor Jurgen zichtbaar (staat nooit in mail/bijlage).
     // Waarschuw als een handmatige uitzondering (PERSOON_OVERRIDES) niemand meer treft — bv. na
     // een schrijfwijze-wijziging in een toekomstig rapport zou die uitzondering anders stil
     // ophouden te werken zonder dat iemand het merkt.
@@ -1174,9 +1405,21 @@ el('btn-verwerk').addEventListener('click', async () => {
     Object.keys(PERSOON_OVERRIDES).forEach(naam => {
       if (!alleNamen.has(naam)) alleWaarschuwingen.push(`Uitzondering "${naam}" (PERSOON_OVERRIDES) komt niet voor in deze rapportage — controleer of de naam nog klopt.`);
     });
+    // Waarschuw bij een groot gat tussen deze en de vorige upload — kan duiden op een gemiste
+    // rapportage, waardoor "deze maand" een langere periode dekt dan bedoeld.
+    if (vorige) {
+      const dagenTussen = Math.round((isoWeekNaarDatum(huidigeData.isoJaar, huidigeData.isoWeek, 7) - isoWeekNaarDatum(vorige.isoJaar, vorige.isoWeek, 7)) / 86400000);
+      if (dagenTussen > 45) alleWaarschuwingen.push(`De vorige upload was ${dagenTussen} dagen geleden (week ${vorige.isoWeek}/${vorige.isoJaar}) — controleer of er een rapportage tussenin ontbreekt.`);
+    }
 
     teams = groepeerPerManager(huidigeData.rijen);
     const teamNamen = Object.keys(teams).sort();
+
+    // Waarschuw als een teamleider/salesmanager uit de configuratie in deze rapportage 0
+    // verkopers oplevert — voorheen verdween zo'n manager gewoon stil uit de keuzelijst.
+    [...TEAMLEIDERS, ...SALESMANAGERS].forEach(m => {
+      if (!teams[m.naam]) alleWaarschuwingen.push(`"${m.naam}" heeft 0 verkopers in deze rapportage — komt niet voor in de keuzelijst. Controleer of de locatie/merk-combinatie nog bestaat.`);
+    });
 
     const select = el('select-team');
     select.innerHTML = teamNamen.map(naam => `<option value="${naam}">${labelVoorManager(naam, teams[naam])}</option>`).join('');
