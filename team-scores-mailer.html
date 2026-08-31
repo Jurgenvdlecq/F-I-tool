@@ -75,7 +75,7 @@
 <body>
 <div class="app">
   <h1>Team-scores Mailer</h1>
-  <p class="sub">Periodiek overzicht per team (locatie + merk) — upload de salesrapportage, kies een team, verstuur zelf.</p>
+  <p class="sub">Periodiek overzicht per teamleider/salesmanager — upload de salesrapportage, kies een persoon, verstuur zelf.</p>
 
   <div class="panel">
     <h2>Salesrapportage uploaden</h2>
@@ -104,7 +104,7 @@
   <div class="panel" id="panel-teams" style="display:none;">
     <h2>Team kiezen</h2>
     <div class="status-line" id="status-line"></div>
-    <label class="veld-label" for="select-team">Team</label>
+    <label class="veld-label" for="select-team">Teamleider / salesmanager</label>
     <select id="select-team"></select>
 
     <div id="grafiek-wrap" style="display:none;margin-bottom:16px;">
@@ -127,6 +127,7 @@
 
     <div class="acties">
       <button class="btn-secondary" id="btn-download" type="button">Download .eml</button>
+      <button class="btn-secondary" id="btn-rapport" type="button">📎 Interactief rapport (bijlage)</button>
       <button class="btn-primary" id="btn-kopieren" type="button">📋 Kopiëren voor Outlook</button>
       <span class="kopieer-status" id="kopieer-status"></span>
     </div>
@@ -492,76 +493,86 @@ function berekenWeekRijen(rijen, vorigeSnapshot) {
 }
 
 /* ============================================================
-   TEAMS GROEPEREN (locatie + merk) EN MAILTEKST BOUWEN
+   ORGANISATIESTRUCTUUR: teamleiders (locatie + merk) en salesmanagers
+   (merk-breed, over alle vestigingen). Beide typen zijn selecteerbaar; een
+   salesmanager ziet de opgetelde verkopers van alle teams met dat merk.
+   PERSOON_OVERRIDES corrigeert de gevallen waarin iemands officiële merk
+   afwijkt van de locatie+merk-indeling in de rapportage zelf — bv. Edwin
+   Snaterse staat qua locatie bij Noordwijk Volkswagen, maar doet officieel
+   Skoda en hoort dus alléén bij Rene Kuhn, niet ook bij Alex Heidinga of
+   Antoine Linderhof.
    ============================================================ */
-let teams = {}; // { "Forepark Audi": [rij, rij, ...] }
+const TEAMLEIDERS = [
+  { naam: 'Jos van Beelen', locatie: 'Forepark', merk: 'Occasions' },
+  { naam: 'Jan Willem Hermans', locatie: 'Forepark', merk: 'Volkswagen' },
+  { naam: 'Julian van der Plas', locatie: 'Forepark', merk: 'Skoda' },
+  { naam: 'Alwin van Rijn', locatie: 'Forepark', merk: 'LKW' },
+  { naam: 'Alex Heidinga', locatie: 'Noordwijk', merk: 'Volkswagen' },
+  { naam: 'Xander Priem', locatie: 'Zoetermeer', merk: 'Occasions' },
+  { naam: 'Wouter Schrama', locatie: 'Honselersdijk', merk: 'Occasions' },
+  { naam: 'Maikel Kegge', locatie: 'De Lier', merk: 'Volkswagen' },
+  { naam: 'Nick van der Voort', locatie: 'De Lier', merk: 'Skoda' },
+  { naam: 'Hans de Kleijn', locatie: 'De Lier', merk: 'Occasions' },
+];
+
+const SALESMANAGERS = [
+  { naam: 'Damoen Sabzewari', merk: 'Seat / CUPRA' },
+  { naam: 'Rene Kuhn', merk: 'Skoda' },
+  { naam: 'Antoine Linderhof', merk: 'Volkswagen' },
+  { naam: 'Giano Tielman', merk: 'Audi' },
+  { naam: 'Roel Oskam', merk: 'LKW' },
+];
+
+// Sleutel = medewerkernaam zoals die in de rapportage staat. Waarde = lijst met de naam/namen van
+// de manager(s) die deze persoon ALTIJD en ALLEEN te zien krijgt, in plaats van de automatische
+// locatie/merk-koppeling hierboven.
+const PERSOON_OVERRIDES = {
+  'Edwin Snaterse': ['Rene Kuhn'],
+};
+
+const MANAGER_INFO = {};
+TEAMLEIDERS.forEach(t => { MANAGER_INFO[t.naam] = { type: 'teamleider', locatie: t.locatie, merk: t.merk }; });
+SALESMANAGERS.forEach(s => { MANAGER_INFO[s.naam] = { type: 'salesmanager', merk: s.merk }; });
+
+/* ============================================================
+   PER MANAGER GROEPEREN EN MAILTEKST BOUWEN
+   ============================================================ */
+let teams = {}; // { "Jan Willem Hermans": [rij, rij, ...] }
 let huidigeData = null;
 
 // Fleetsales valt buiten de scope van deze scorecard (andere F&I-dynamiek, geen vergelijkbare
-// doelen als de showroom-verkopers) — wordt hier uitgefilterd, vóór het groeperen in teams, zodat
-// Fleetsales ook nooit meetelt in de teamranking of het bedrijfsgemiddelde.
+// doelen als de showroom-verkopers) — wordt hier uitgefilterd, vóór het groeperen per manager, zodat
+// Fleetsales ook nooit meetelt in de ranking of het gemiddelde.
 function filterShowroomVerkopers(rijen) {
   return rijen.filter(r => r.locatie !== 'Fleetsales' && r.merk !== 'Fleetsales');
 }
 
-function groepeerInTeams(verzekeringenRijen) {
+function bepaalManagersVoorRij(r) {
+  if (PERSOON_OVERRIDES[r.medewerker]) return PERSOON_OVERRIDES[r.medewerker];
+  const namen = [];
+  Object.entries(MANAGER_INFO).forEach(([naam, info]) => {
+    if (info.type === 'teamleider' && info.locatie === r.locatie && info.merk === r.merk) namen.push(naam);
+    if (info.type === 'salesmanager' && info.merk === r.merk) namen.push(naam);
+  });
+  return namen;
+}
+
+function groepeerPerManager(rijen) {
   const map = {};
-  verzekeringenRijen.forEach(r => {
-    const key = `${r.locatie} ${r.merk}`;
-    if (!map[key]) map[key] = [];
-    map[key].push(r);
+  rijen.forEach(r => {
+    bepaalManagersVoorRij(r).forEach(naam => {
+      if (!map[naam]) map[naam] = [];
+      map[naam].push(r);
+    });
   });
   return map;
 }
 
-// Mail-HTML gebruikt vaste hex-kleuren en inline-styles (geen CSS-variabelen): zodra de mail in
-// Outlook geplakt/geopend wordt bestaat de stylesheet van deze pagina niet meer.
-const TH_STIJL = 'text-align:left;padding:6px 8px;border-bottom:1px solid #dde3ed;font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;';
-const TD_STIJL = 'text-align:left;padding:6px 8px;border-bottom:1px solid #eef1f8;';
-const TD_TOTAAL_STIJL = 'text-align:left;padding:6px 8px;border-top:2px solid #dde3ed;font-weight:700;';
-
-function vinkje(opKoers) {
-  return opKoers
-    ? '<span style="color:#1f8a5f;font-weight:700;">&nbsp;✓</span>'
-    : '<span style="color:#c0392b;font-weight:700;">&nbsp;✗</span>';
-}
-
-function bouwTeamTabel(rijen, heeftWeek) {
-  const regels = rijen.map(r => {
-    const verzPct = r.afleveringen > 0 ? Math.round((r.totaal / r.afleveringen) * 100) : null;
-    const verzVink = (r.afleveringen > 0) ? vinkje(verzPct >= (r.verzDoel ?? 25)) : '';
-    const verzTekst = `${r.totaal} (${verzPct !== null ? verzPct + '%' : '–'})${verzVink}`;
-
-    // financierings-% komt rechtstreeks uit de rapportage (eigen noemer, zie parser) — bij 0
-    // financieringen laat de PDF de cel leeg, dan is 0% het feitelijke equivalent
-    let financTekst = '–';
-    if (r.financAantal !== null) {
-      const financPct = r.financRealisatie !== null ? r.financRealisatie : 0;
-      const financVink = r.financDoel !== null ? vinkje(financPct >= r.financDoel) : '';
-      financTekst = `${r.financAantal} (${financPct}%)${financVink}`;
-    }
-
-    const weekCel = heeftWeek ? `<td style="${TD_STIJL}white-space:nowrap;">${r.weekAfl} afl · ${r.weekVerz} verz · ${r.weekFin !== null ? r.weekFin : '–'} fin</td>` : '';
-    return `<tr><td style="${TD_STIJL}">${r.medewerker}</td>${weekCel}<td style="${TD_STIJL}">${r.afleveringen}</td><td style="${TD_STIJL}white-space:nowrap;">${verzTekst}</td><td style="${TD_STIJL}white-space:nowrap;">${financTekst}</td></tr>`;
-  }).join('');
-
-  const totaalAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
-  const totaalPolissen = rijen.reduce((s, r) => s + r.totaal, 0);
-  const totaalPct = totaalAfleveringen > 0 ? Math.round((totaalPolissen / totaalAfleveringen) * 100) + '%' : '–';
-  const totaalFinanc = rijen.reduce((s, r) => s + (r.financAantal || 0), 0);
-  const weekTotaalCel = heeftWeek
-    ? `<td style="${TD_TOTAAL_STIJL}white-space:nowrap;">${rijen.reduce((s, r) => s + (r.weekAfl || 0), 0)} afl · ${rijen.reduce((s, r) => s + (r.weekVerz || 0), 0)} verz · ${rijen.reduce((s, r) => s + (r.weekFin || 0), 0)} fin</td>`
-    : '';
-
-  const doelVoetnoot = `<p style="font-size:11.5px;color:#6b7280;margin:4px 0 12px;">✓/✗ = wel/niet op koers voor het jaardoel uit de rapportage (verzekeringen ${rijen[0] && rijen[0].verzDoel ? rijen[0].verzDoel : 25}%, financiering verschilt per merk). Percentages zijn jaarcijfers.</p>`;
-
-  return `<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;font-size:13px;margin:10px 0 4px;">
-    <thead><tr><th style="${TH_STIJL}">Naam</th>${heeftWeek ? `<th style="${TH_STIJL}">Deze periode</th>` : ''}<th style="${TH_STIJL}">Afl. (jaar)</th><th style="${TH_STIJL}">Verzekeringen (jaar)</th><th style="${TH_STIJL}">Financieringen (jaar)</th></tr></thead>
-    <tbody>
-      ${regels}
-      <tr><td style="${TD_TOTAAL_STIJL}">Totaal</td>${weekTotaalCel}<td style="${TD_TOTAAL_STIJL}">${totaalAfleveringen}</td><td style="${TD_TOTAAL_STIJL}">${totaalPolissen} (${totaalPct})</td><td style="${TD_TOTAAL_STIJL}">${totaalFinanc}</td></tr>
-    </tbody>
-  </table>${doelVoetnoot}`;
+function labelVoorManager(naam, rijen) {
+  const info = MANAGER_INFO[naam];
+  return info.type === 'salesmanager'
+    ? `${naam} — ${info.merk}, alle vestigingen (${rijen.length})`
+    : `${naam} — ${info.locatie} ${info.merk} (${rijen.length})`;
 }
 
 // Teamgrafiek: conversie% per periode over de opgebouwde geschiedenis. Vaste pixelgrootte +
@@ -609,40 +620,11 @@ function bouwTeamGrafiek(teamNaam, geschiedenis, isoJaar, doelPct) {
   return el('team-grafiek').toDataURL('image/png');
 }
 
-// Stijgers & dalers: wie doet het de laatste periodes beter/slechter dan in de periodes daarvoor.
-// Dit is waar een teamleider op stuurt — niet de absolute stand (die verandert traag omdat het
-// jaarcijfers zijn), maar de beweging. Alleen personen met genoeg volume in beide vensters.
-function bouwStijgersDalers(rijen, trendInfo) {
-  if (!trendInfo) return '';
-  const metTrend = rijen
-    .map(r => ({ r, t: trendInfo.trends.get(`${r.locatie}|${r.merk}|${r.medewerker}`) }))
-    .filter(x => x.t);
-  if (metTrend.length === 0) return '';
-
-  const stijgers = metTrend.filter(x => x.t.verschil > 0).sort((a, b) => b.t.verschil - a.t.verschil).slice(0, 3);
-  const dalers = metTrend.filter(x => x.t.verschil < 0).sort((a, b) => a.t.verschil - b.t.verschil).slice(0, 3);
-  if (stijgers.length === 0 && dalers.length === 0) return '';
-
-  const w = trendInfo.vensterLengte;
-  const periodeTekst = `laatste ${w} ${w === 1 ? 'periode' : 'periodes'} (week ${trendInfo.recentWeken[0]}–${trendInfo.recentWeken[trendInfo.recentWeken.length - 1]}) t.o.v. de ${w} ${w === 1 ? 'periode' : 'periodes'} daarvoor (week ${trendInfo.eerderWeken[0]}–${trendInfo.eerderWeken[trendInfo.eerderWeken.length - 1]})`;
-
-  const regel = (x, kleur, teken) =>
-    `<li style="margin-bottom:3px;"><strong>${x.r.medewerker}</strong>: ${x.t.eerderPct}% → ${x.t.recentPct}% <span style="color:${kleur};font-weight:700;">(${teken}${Math.abs(x.t.verschil)} procentpunt)</span></li>`;
-
-  let html = `<p style="margin-bottom:4px;"><strong>Trend verzekeringen</strong> — ${periodeTekst}:</p>`;
-  if (stijgers.length > 0) {
-    html += `<p style="margin:6px 0 2px;">📈 Vooruit:</p><ul style="margin:0 0 8px;padding-left:22px;">${stijgers.map(x => regel(x, '#1f8a5f', '+')).join('')}</ul>`;
-  }
-  if (dalers.length > 0) {
-    html += `<p style="margin:6px 0 2px;">📉 Achteruit:</p><ul style="margin:0 0 8px;padding-left:22px;">${dalers.map(x => regel(x, '#c0392b', '−')).join('')}</ul>`;
-  }
-  return html;
-}
-
 // Vergelijking met vorig jaar op hetzelfde punt in het jaar (zelfde weeknummer). Werkt alleen
 // als er rapportages van vorig jaar in de geschiedenis zitten — de PDF zelf bevat géén
-// vorig-jaar-cijfers per medewerker, dus dit kan niet uit één upload komen.
-function bouwVorigJaar(rijen, vorigJaarSnapshot, isoWeek) {
+// vorig-jaar-cijfers per medewerker, dus dit kan niet uit één upload komen. Wordt gebruikt in het
+// interactieve bijlage-rapport (de korte e-mail houdt dit soort detail bewust buiten de deur).
+function bouwVorigJaarTekst(rijen, vorigJaarSnapshot) {
   if (!vorigJaarSnapshot) return '';
   const vorigMap = new Map();
   vorigJaarSnapshot.rijen.forEach(r => vorigMap.set(`${r.locatie}|${r.merk}|${r.medewerker}`, r));
@@ -662,105 +644,380 @@ function bouwVorigJaar(rijen, vorigJaarSnapshot, isoWeek) {
   const verschil = nuPct - vjPct;
   const kleur = verschil > 0 ? '#1f8a5f' : verschil < 0 ? '#c0392b' : '#6b7280';
   const teken = verschil > 0 ? '+' : verschil < 0 ? '−' : '';
-  const kanttekening = gevonden < rijen.length ? ` (op basis van de ${gevonden} van de ${rijen.length} teamleden die er vorig jaar ook al waren)` : '';
+  const kanttekening = gevonden < rijen.length ? ` (op basis van de ${gevonden} van de ${rijen.length} die er vorig jaar ook al waren)` : '';
 
-  return `<p><strong>T.o.v. vorig jaar:</strong> op ditzelfde moment in ${vorigJaarSnapshot.isoJaar} (week ${vorigJaarSnapshot.isoWeek}) stond het team op ${vjPct}% verzekeringsconversie, nu op ${nuPct}% <span style="color:${kleur};font-weight:700;">(${teken}${Math.abs(verschil)} procentpunt)</span>${kanttekening}.</p>`;
+  return `<p>T.o.v. vorig jaar (week ${vorigJaarSnapshot.isoWeek}, ${vorigJaarSnapshot.isoJaar}): <span style="color:${kleur};font-weight:700;">${teken}${Math.abs(verschil)} procentpunt</span> (${vjPct}% → ${nuPct}%)${kanttekening}.</p>`;
 }
 
-// ⭐ Positieve tegenhanger van het aandachtspunt: wie scoorde deze periode de meeste verzekeringen.
-// Alleen mogelijk (en zinvol) zodra er periodecijfers zijn.
-function bouwUitblinker(rijen) {
-  const kandidaten = rijen.filter(r => r.weekVerz !== null && r.weekVerz > 0);
-  if (kandidaten.length === 0) return '';
-  const max = Math.max(...kandidaten.map(r => r.weekVerz));
-  const toppers = kandidaten.filter(r => r.weekVerz === max).map(r => r.medewerker);
-  return `<p>⭐ <strong>Uitblinker${toppers.length > 1 ? 's' : ''} deze periode:</strong> ${toppers.join(' & ')} — ${max} ${max === 1 ? 'verzekering' : 'verzekeringen'} erbij.</p>`;
-}
+function voornaam(volledigeNaam) { return volledigeNaam.split(' ')[0]; }
 
-// "Aandachtspunt": wie leverde af zonder dat er een verzekering ÓF financiering aan gekoppeld
-// werd. Met periodecijfers is dit een scherp signaal; zonder geschiedenis (eerste upload)
-// valt het terug op de jaarstand. Alleen geclaimd wanneer beide totalen hard op 0 staan —
-// dat is een feit uit de aggregaten, geen schatting.
-function bouwAandachtspunt(rijen, heeftWeek) {
-  if (heeftWeek) {
-    const lijst = rijen.filter(r => r.weekAfl > 0 && r.weekVerz === 0 && r.weekFin === 0);
-    if (lijst.length === 0) return '';
-    const namen = lijst.map(r => `${r.medewerker} (${r.weekAfl} ${r.weekAfl === 1 ? 'aflevering' : 'afleveringen'})`).join(', ');
-    return `<p><strong>Aandachtspunt:</strong> ${namen} — leverde deze periode af zonder gekoppelde verzekering of financiering.</p>`;
+// Eén score per persoon die verzekering én financiering gelijkwaardig weegt: het gemiddelde van
+// hoeveel procentpunt iemand boven/onder het eigen doel zit, per product waarvoor doel-data bekend
+// is. Ontbreekt beide, dan is er niets zinvols te zeggen (null) — dat sluit deze persoon uit van de
+// aandachtspunten/koplopers-selectie i.p.v. hem stilzwijgend op 0 te zetten.
+function berekenAfwijking(r) {
+  const afwijkingen = [];
+  if (r.afleveringen > 0) {
+    const verzPct = Math.round((r.totaal / r.afleveringen) * 100);
+    afwijkingen.push(verzPct - (r.verzDoel ?? 25));
   }
-  const nulOpBeide = rijen.filter(r => r.afleveringen > 0 && r.totaal === 0 && r.financAantal === 0);
-  if (nulOpBeide.length === 0) return '';
-  const namen = nulOpBeide.map(r => `${r.medewerker} (${r.afleveringen} ${r.afleveringen === 1 ? 'aflevering' : 'afleveringen'})`).join(', ');
-  return `<p><strong>Aandachtspunt:</strong> ${namen} — dit jaar nog zonder gekoppelde verzekering of financiering.</p>`;
+  if (r.financAantal !== null && r.financDoel !== null) {
+    const financPct = r.financRealisatie !== null ? r.financRealisatie : 0;
+    afwijkingen.push(financPct - r.financDoel);
+  }
+  if (afwijkingen.length === 0) return null;
+  return afwijkingen.reduce((a, b) => a + b, 0) / afwijkingen.length;
 }
 
-// Vergelijkt een team met alle andere teams uit dezelfde upload — dit is de toegevoegde waarde
-// t.o.v. gewoon de PDF doorsturen: een teamleider die alleen zijn eigen sectie leest, ziet zelf
-// niet waar hij t.o.v. de rest staat. Kleine teams (weinig afleveringen) tellen bewust niet mee
-// in de ranking — een team met 1 aflevering kan anders toevallig op 0% of 100% conversie staan.
+// Eén zin per persoon die verzekering én financiering combineert — dit vervangt de losse
+// "trend verzekeringen"/"aandachtspunt"-secties van eerdere versies, die financiering volledig
+// buiten beeld lieten. Alle detail (trend, geschiedenis) staat in de interactieve bijlage; hier
+// gaat het puur om de huidige jaarstand tov doel, kort samengevat.
+function bouwCombinatieZin(r) {
+  const verzPct = r.afleveringen > 0 ? Math.round((r.totaal / r.afleveringen) * 100) : null;
+  const verzDoel = r.verzDoel ?? 25;
+  const verzOpKoers = verzPct !== null ? verzPct >= verzDoel : null;
+  const heeftFinanc = r.financAantal !== null && r.financDoel !== null;
+  const financPct = heeftFinanc ? (r.financRealisatie !== null ? r.financRealisatie : 0) : null;
+  const financOpKoers = heeftFinanc ? financPct >= r.financDoel : null;
+
+  const verzDeel = `verzekering (${verzPct}%, doel ${verzDoel}%)`;
+  const financDeel = heeftFinanc ? `financiering (${financPct}%, doel ${r.financDoel}%)` : null;
+
+  if (verzPct !== null && financDeel) {
+    if (verzOpKoers && financOpKoers) return `<strong>${r.medewerker}</strong>: op koers voor zowel ${financDeel} als ${verzDeel}.`;
+    if (verzOpKoers && !financOpKoers) return `<strong>${r.medewerker}</strong>: sterk op verzekering (${verzPct}%, doel gehaald), blijft achter op ${financDeel}.`;
+    if (!verzOpKoers && financOpKoers) return `<strong>${r.medewerker}</strong>: sterk op financiering (${financPct}%, doel gehaald), blijft achter op ${verzDeel}.`;
+    return `<strong>${r.medewerker}</strong>: blijft achter op zowel ${financDeel} als ${verzDeel}.`;
+  }
+  const enige = verzPct !== null ? verzDeel : financDeel;
+  const opKoers = verzPct !== null ? verzOpKoers : financOpKoers;
+  return `<strong>${r.medewerker}</strong>: ${opKoers ? 'op koers voor' : 'blijft achter op'} ${enige}.`;
+}
+
+const HIGHLIGHT_DREMPEL_AFLEVERINGEN = 3;
+
+// Aandachtspunten en koplopers, gecombineerd over beide producten — de kern van de korte e-mail.
+// Alleen personen met genoeg volume tellen mee (zie berekenAfwijking/HIGHLIGHT_DREMPEL), anders kan
+// één toevallige aflevering iemand onterecht bovenaan of onderaan zetten.
+function bouwHighlights(rijen) {
+  const inAanmerking = rijen
+    .filter(r => r.afleveringen >= HIGHLIGHT_DREMPEL_AFLEVERINGEN)
+    .map(r => ({ r, afwijking: berekenAfwijking(r) }))
+    .filter(x => x.afwijking !== null);
+  if (inAanmerking.length === 0) return '<p>Te weinig volume deze periode voor zinvolle aandachtspunten of koplopers.</p>';
+
+  const aandacht = inAanmerking.filter(x => x.afwijking < 0).sort((a, b) => a.afwijking - b.afwijking).slice(0, 3);
+  const koplopers = inAanmerking.filter(x => x.afwijking > 0).sort((a, b) => b.afwijking - a.afwijking).slice(0, 3);
+
+  let html = '';
+  if (aandacht.length > 0) {
+    html += `<p style="margin-bottom:4px;"><strong>Aandachtspunten:</strong></p><ul style="margin:0 0 10px;padding-left:22px;">${aandacht.map(x => `<li style="margin-bottom:3px;">${bouwCombinatieZin(x.r)}</li>`).join('')}</ul>`;
+  }
+  if (koplopers.length > 0) {
+    html += `<p style="margin-bottom:4px;"><strong>Koplopers:</strong></p><ul style="margin:0 0 10px;padding-left:22px;">${koplopers.map(x => `<li style="margin-bottom:3px;">${bouwCombinatieZin(x.r)}</li>`).join('')}</ul>`;
+  }
+  return html;
+}
+
+// Financieringspercentage komt rechtstreeks uit de rapportage met een eigen, niet-gepubliceerde
+// noemer (zie parseFinancieringenTabel) — daarom telt de teamregel alleen het aantal, geen %.
+function bouwTeamTotaalRegel(rijen) {
+  const totaalAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
+  const totaalVerz = rijen.reduce((s, r) => s + r.totaal, 0);
+  const verzPct = totaalAfleveringen > 0 ? Math.round((totaalVerz / totaalAfleveringen) * 100) : null;
+  const totaalFinanc = rijen.reduce((s, r) => s + (r.financAantal || 0), 0);
+  return `<p>Jaartotaal: ${totaalVerz} verzekeringen op ${totaalAfleveringen} afleveringen${verzPct !== null ? ` (${verzPct}%)` : ''}, en ${totaalFinanc} financieringen (financieringspercentage verschilt per merk en is alleen per persoon zinvol — zie bijlage).</p>`;
+}
+
+// Vergelijkt een teamleider/salesmanager met vergelijkbare anderen (zélfde type) — dit is de
+// toegevoegde waarde t.o.v. gewoon de PDF doorsturen: iemand die alleen zijn eigen sectie leest,
+// ziet zelf niet waar hij t.o.v. de rest staat. Teamleiders worden alleen tegen andere teamleiders
+// afgezet, salesmanagers alleen tegen andere salesmanagers — een merk-brede salesmanager-scope is
+// vrijwel altijd groter dan een locatie-scope, dus kruislings vergelijken zou oneerlijk zijn.
+// Kleine scopes (weinig afleveringen) tellen bewust niet mee — anders kan 1 aflevering toevallig op
+// 0% of 100% conversie staan.
 const RANKING_DREMPEL_AFLEVERINGEN = 3;
 
-function berekenTeamRanking(teams, teamNaam) {
-  const overzicht = Object.entries(teams).map(([naam, rijen]) => {
+function berekenTeamRanking(teams, managerNaam) {
+  const info = MANAGER_INFO[managerNaam];
+  const vergelijkbareNamen = Object.keys(teams).filter(naam => MANAGER_INFO[naam].type === info.type);
+  const overzicht = vergelijkbareNamen.map(naam => {
+    const rijen = teams[naam];
     const totaalPolissen = rijen.reduce((s, r) => s + r.totaal, 0);
     const totaalAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
     return { naam, totaalPolissen, totaalAfleveringen, pct: totaalAfleveringen > 0 ? totaalPolissen / totaalAfleveringen : 0 };
   });
 
-  const bedrijfTotaalPolissen = overzicht.reduce((s, t) => s + t.totaalPolissen, 0);
-  const bedrijfTotaalAfleveringen = overzicht.reduce((s, t) => s + t.totaalAfleveringen, 0);
-  const bedrijfsGemiddelde = bedrijfTotaalAfleveringen > 0 ? bedrijfTotaalPolissen / bedrijfTotaalAfleveringen : 0;
+  const totaalPolissen = overzicht.reduce((s, t) => s + t.totaalPolissen, 0);
+  const totaalAfleveringen = overzicht.reduce((s, t) => s + t.totaalAfleveringen, 0);
+  const gemiddelde = totaalAfleveringen > 0 ? totaalPolissen / totaalAfleveringen : 0;
 
   const gerankt = overzicht.filter(t => t.totaalAfleveringen >= RANKING_DREMPEL_AFLEVERINGEN).sort((a, b) => b.pct - a.pct);
-  const rangIdx = gerankt.findIndex(t => t.naam === teamNaam);
+  const rangIdx = gerankt.findIndex(t => t.naam === managerNaam);
+  const eigen = overzicht.find(t => t.naam === managerNaam);
 
   return {
     rang: rangIdx === -1 ? null : rangIdx + 1,
     totaalTeams: gerankt.length,
-    bedrijfsGemiddelde,
+    bedrijfsGemiddelde: gemiddelde,
+    eigenPct: eigen ? Math.round(eigen.pct * 100) : 0,
+    vergelijkingsLabel: info.type === 'salesmanager' ? 'andere salesmanagers' : 'andere teamleiders',
   };
 }
 
-function genereerTeamMail(teamNaam) {
-  const rijen = teams[teamNaam];
+// Korte e-mail: alleen het teamtotaal, de ranking en de opvallende personen (gecombineerd over
+// verzekering + financiering). Het volledige overzicht per verkoper — incl. trendlijnen — staat
+// in het interactieve bijlage-rapport (zie bouwInteractiefRapportHtml), niet in de mailtekst zelf.
+function genereerTeamMail(managerNaam) {
+  const rijen = teams[managerNaam];
+  const info = MANAGER_INFO[managerNaam];
   const eindeWeek = formatDatum(isoWeekNaarDatum(huidigeData.isoJaar, huidigeData.isoWeek, 7));
-  const ranking = berekenTeamRanking(teams, teamNaam);
-  const heeftWeek = huidigeData.heeftWeek;
+  const ranking = berekenTeamRanking(teams, managerNaam);
 
-  const teamAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
-  const teamPolissen = rijen.reduce((s, r) => s + r.totaal, 0);
-  const teamPct = teamAfleveringen > 0 ? Math.round((teamPolissen / teamAfleveringen) * 100) : 0;
+  // ook op het scherm bijwerken (los van de mailtekst) zodat je 'm kunt bekijken tijdens het kiezen
+  const doelPct = (rijen[0] && rijen[0].verzDoel) ? rijen[0].verzDoel : 25;
+  bouwTeamGrafiek(managerNaam, huidigeData.geschiedenis, huidigeData.isoJaar, doelPct);
 
-  // de PDF bevat per medewerker alleen jaarstanden — benoem dat eerlijk, en toon pas
-  // periodecijfers zodra er een vorige upload is om tegen af te zetten
-  const intro = heeftWeek
-    ? `<p>Hierbij de scores over de afgelopen periode (t/m week ${huidigeData.isoWeek}, ${eindeWeek}): wat er deze periode bij kwam, plus de jaarstand per persoon.</p>`
-    : `<p>Hierbij de tussenstand tot en met week ${huidigeData.isoWeek} (t/m ${eindeWeek}). Alle cijfers zijn jaartotalen; vanaf de volgende update staan hier ook de cijfers over de afgelopen periode bij.</p>`;
+  const groet = info.type === 'salesmanager'
+    ? `<p>Hoi ${voornaam(managerNaam)},</p><p>Hierbij de ${info.merk}-scores van al je verkopers (alle vestigingen), t/m week ${huidigeData.isoWeek} (${eindeWeek}).</p>`
+    : `<p>Hoi ${voornaam(managerNaam)},</p><p>Hierbij de scores van je team (${info.locatie} ${info.merk}), t/m week ${huidigeData.isoWeek} (${eindeWeek}).</p>`;
 
   const vergelijkingRegel = ranking.rang
-    ? `<p>Ter vergelijking: met ${teamPct}% verzekeringsconversie (jaarcijfer) staat jullie team op plek ${ranking.rang} van de ${ranking.totaalTeams} teams (bedrijfsgemiddelde: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`
-    : `<p>Te weinig afleveringen voor een zinvolle vergelijking met andere teams (bedrijfsgemiddelde conversie: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`;
-
-  const doelPct = (rijen[0] && rijen[0].verzDoel) ? rijen[0].verzDoel : 25;
-  const grafiekUrl = bouwTeamGrafiek(teamNaam, huidigeData.geschiedenis, huidigeData.isoJaar, doelPct);
-  const grafiekSectie = grafiekUrl
-    ? `<p style="margin-bottom:2px;"><strong>Verloop verzekeringsconversie per periode</strong></p><img src="${grafiekUrl}" style="max-width:100%;border:1px solid #dde3ed;border-radius:4px;margin-bottom:14px;">`
-    : '';
+    ? `<p>Ter vergelijking: met ${ranking.eigenPct}% verzekeringsconversie sta je op plek ${ranking.rang} van de ${ranking.totaalTeams} ${ranking.vergelijkingsLabel} (gemiddelde: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`
+    : `<p>Te weinig afleveringen voor een zinvolle vergelijking met ${ranking.vergelijkingsLabel} (gemiddelde conversie: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`;
 
   const html = `
-<p>Hoi team ${teamNaam},</p>
-${intro}
-${bouwTeamTabel(rijen, heeftWeek)}
+${groet}
+${bouwTeamTotaalRegel(rijen)}
 ${vergelijkingRegel}
-${bouwStijgersDalers(rijen, huidigeData.trendInfo)}
-${grafiekSectie}
-${bouwVorigJaar(rijen, huidigeData.vorigJaar, huidigeData.isoWeek)}
-${heeftWeek ? bouwUitblinker(rijen) : ''}
-${bouwAandachtspunt(rijen, heeftWeek)}
+${bouwHighlights(rijen)}
+<p style="font-size:12.5px;color:#6b7280;">Het volledige overzicht per verkoper (incl. trend per periode) vind je in de bijgevoegde interactieve rapportage.</p>
 <p>Groet,<br>Jurgen</p>`;
 
   el('mail-preview').innerHTML = html;
-  el('veld-onderwerp').value = `Scores ${teamNaam} — t/m week ${huidigeData.isoWeek} (${huidigeData.isoJaar})`;
+  el('veld-onderwerp').value = `F&I-scores ${info.type === 'salesmanager' ? info.merk : `${info.locatie} ${info.merk}`} — t/m week ${huidigeData.isoWeek} (${huidigeData.isoJaar})`;
+}
+
+/* ============================================================
+   INTERACTIEF BIJLAGE-RAPPORT — zelfstandig HTML-bestand, geen CDN-afhankelijkheden (de
+   ontvanger opent dit lokaal, mogelijk zonder internet), dus trendlijnen worden als kale inline
+   SVG getekend i.p.v. met Chart.js. Bevat per verkoper een klikbaar detailpaneel met verzekering
+   én financiering gelijkwaardig naast elkaar, plus de historie die deze tool al heeft opgebouwd.
+   ============================================================ */
+
+// Simpele lijngrafiek voor een percentage-reeks (verzekeringsconversie) met stippellijn op het
+// doel. Punten met pct=null (geen data die periode) worden overgeslagen — dat laat een "sprong"
+// in de lijn zien i.p.v. een misleidende interpolatie over een lege periode.
+function bouwSvgLijnChart(punten, doelPct, kleur) {
+  const geldig = punten.map((p, i) => ({ ...p, i })).filter(p => p.pct !== null);
+  if (geldig.length < 2) return '';
+  const breedte = 300, hoogte = 90, padding = 22;
+  const maxPct = Math.max(100, doelPct, ...geldig.map(p => p.pct));
+  const stapX = (breedte - padding * 2) / (punten.length - 1);
+  const xVoor = i => padding + i * stapX;
+  const yVoor = pct => hoogte - padding - ((pct / maxPct) * (hoogte - padding * 2));
+
+  const segmenten = [];
+  for (let i = 1; i < geldig.length; i++) {
+    const a = geldig[i - 1], b = geldig[i];
+    segmenten.push(`<line x1="${xVoor(a.i)}" y1="${yVoor(a.pct)}" x2="${xVoor(b.i)}" y2="${yVoor(b.pct)}" stroke="${kleur}" stroke-width="2" />`);
+  }
+  const stippen = geldig.map(p => `<circle cx="${xVoor(p.i)}" cy="${yVoor(p.pct)}" r="2.5" fill="${kleur}" />`).join('');
+  const doelY = yVoor(doelPct);
+  const labels = punten.map((p, i) => `<text x="${xVoor(i)}" y="${hoogte - 4}" font-size="8" fill="#6b7280" text-anchor="middle">${p.label}</text>`).join('');
+
+  return `<svg width="${breedte}" height="${hoogte}" viewBox="0 0 ${breedte} ${hoogte}" style="max-width:100%;">
+    <line x1="${padding}" y1="${doelY}" x2="${breedte - padding}" y2="${doelY}" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4,3" />
+    ${segmenten.join('')}${stippen}${labels}
+  </svg>`;
+}
+
+// Simpele staafgrafiek voor een telling per periode (aantal financieringen) — geen doellijn, want
+// het financieringsdoel is een %, en de noemer daarvan is niet bekend (zie parseFinancieringenTabel)
+// — dus we tonen hier alleen de trend in aantal, niet een (mogelijk misleidend) percentage.
+function bouwSvgTellingChart(punten, kleur) {
+  const geldig = punten.filter(p => p.aantal !== null);
+  if (geldig.length < 2) return '';
+  const breedte = 300, hoogte = 70, padding = 22;
+  const maxAantal = Math.max(1, ...geldig.map(p => p.aantal));
+  const stapX = (breedte - padding * 2) / (punten.length - 1);
+  const xVoor = i => padding + i * stapX;
+  const bovenY = padding - 8;
+  const basisY = hoogte - padding;
+
+  const balken = punten.map((p, i) => {
+    if (p.aantal === null) return '';
+    const h = maxAantal > 0 ? (p.aantal / maxAantal) * (basisY - bovenY) : 0;
+    return `<rect x="${xVoor(i) - 6}" y="${basisY - h}" width="12" height="${Math.max(1, h)}" fill="${kleur}" rx="2" />`;
+  }).join('');
+  const labels = punten.map((p, i) => `<text x="${xVoor(i)}" y="${hoogte - 4}" font-size="8" fill="#6b7280" text-anchor="middle">${p.label}</text>`).join('');
+
+  return `<svg width="${breedte}" height="${hoogte}" viewBox="0 0 ${breedte} ${hoogte}" style="max-width:100%;">${balken}${labels}</svg>`;
+}
+
+// Geschiedenis van één specifieke persoon (locatie|merk|medewerker) omgezet naar periodepunten:
+// verzPct (percentage, want de noemer — afleveringen — is bekend) en finAantal (kale telling, om
+// dezelfde reden als bouwSvgTellingChart hierboven geen %).
+function bouwPersoonsGeschiedenis(sleutel, geschiedenis, isoJaar) {
+  const periodes = bouwWeekDeltas(geschiedenis, isoJaar);
+  return periodes.map(p => {
+    const w = p.perPersoon.get(sleutel);
+    if (!w) return { label: `W${p.isoWeek}`, verzPct: null, finAantal: null };
+    return {
+      label: `W${p.isoWeek}`,
+      verzPct: w.afl > 0 ? Math.round((w.verz / w.afl) * 100) : null,
+      finAantal: w.fin,
+    };
+  });
+}
+
+function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
+  const info = MANAGER_INFO[managerNaam];
+  const scopeLabel = info.type === 'salesmanager' ? `${info.merk} — alle vestigingen` : `${info.locatie} ${info.merk}`;
+  const eindeWeek = formatDatum(isoWeekNaarDatum(data.isoJaar, data.isoWeek, 7));
+  const ranking = berekenTeamRanking(teams, managerNaam);
+
+  const teamAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
+  const teamVerz = rijen.reduce((s, r) => s + r.totaal, 0);
+  const teamVerzPct = teamAfleveringen > 0 ? Math.round((teamVerz / teamAfleveringen) * 100) : null;
+  const teamFinanc = rijen.reduce((s, r) => s + (r.financAantal || 0), 0);
+
+  const teamPeriodes = bouwWeekDeltas(data.geschiedenis, data.isoJaar);
+  const teamLeden = new Set(rijen.map(r => `${r.locatie}|${r.merk}|${r.medewerker}`));
+  const teamPunten = teamPeriodes.map(p => {
+    let verz = 0, afl = 0;
+    p.perPersoon.forEach((w, sleutel) => { if (teamLeden.has(sleutel)) { verz += w.verz; afl += w.afl; } });
+    return { label: `W${p.isoWeek}`, pct: afl > 0 ? Math.round((verz / afl) * 100) : null };
+  });
+  const doelPct = (rijen[0] && rijen[0].verzDoel) ? rijen[0].verzDoel : 25;
+  const teamGrafiek = bouwSvgLijnChart(teamPunten, doelPct, '#1c4f9c') || '<p class="voetnoot">Nog geen trend beschikbaar (minimaal 2 periodes nodig).</p>';
+  const vorigJaarTekst = bouwVorigJaarTekst(rijen, data.vorigJaar);
+
+  const teamKaart = `
+    <div class="kaart">
+      <h2>${scopeLabel}</h2>
+      <div class="statrij">
+        <div class="stat"><div class="label">Afleveringen (jaar)</div><div class="waarde">${teamAfleveringen}</div></div>
+        <div class="stat"><div class="label">Verzekeringen (jaar)</div><div class="waarde">${teamVerz}${teamVerzPct !== null ? ` (${teamVerzPct}%)` : ''}</div></div>
+        <div class="stat"><div class="label">Financieringen (jaar)</div><div class="waarde">${teamFinanc}</div></div>
+      </div>
+      <p>${ranking.rang ? `Plek ${ranking.rang} van ${ranking.totaalTeams} ${ranking.vergelijkingsLabel} (gemiddelde ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).` : `Te weinig volume voor een ranking t.o.v. ${ranking.vergelijkingsLabel}.`}</p>
+      ${vorigJaarTekst}
+      <p style="margin-bottom:4px;font-size:12px;color:var(--muted);">Verloop verzekeringsconversie</p>
+      ${teamGrafiek}
+    </div>`;
+
+  const liItems = rijen.map((r, i) => {
+    const verzPct = r.afleveringen > 0 ? Math.round((r.totaal / r.afleveringen) * 100) : null;
+    const verzGoed = verzPct !== null && verzPct >= (r.verzDoel ?? 25);
+    const heeftFinanc = r.financAantal !== null && r.financDoel !== null;
+    const financGoed = heeftFinanc && (r.financRealisatie !== null ? r.financRealisatie : 0) >= r.financDoel;
+    const verzBadge = verzPct !== null ? `<span class="${verzGoed ? 'vink-goed' : 'vink-fout'}">V${verzGoed ? '✓' : '✗'}</span>` : '';
+    const financBadge = heeftFinanc ? `<span class="${financGoed ? 'vink-goed' : 'vink-fout'}">F${financGoed ? '✓' : '✗'}</span>` : '';
+    return `<li data-idx="${i}"><span>${r.medewerker}</span><span class="badges">${verzBadge} ${financBadge}</span></li>`;
+  }).join('');
+
+  const detailPanels = rijen.map((r, i) => {
+    const sleutel = `${r.locatie}|${r.merk}|${r.medewerker}`;
+    const geschiedenisPersoon = bouwPersoonsGeschiedenis(sleutel, data.geschiedenis, data.isoJaar);
+    const verzPct = r.afleveringen > 0 ? Math.round((r.totaal / r.afleveringen) * 100) : null;
+    const verzDoel = r.verzDoel ?? 25;
+    const verzGoed = verzPct !== null && verzPct >= verzDoel;
+    const heeftFinanc = r.financAantal !== null;
+    const financPct = heeftFinanc ? (r.financRealisatie !== null ? r.financRealisatie : 0) : null;
+    const financGoed = heeftFinanc && r.financDoel !== null && financPct >= r.financDoel;
+
+    const verzTrend = bouwSvgLijnChart(geschiedenisPersoon.map(p => ({ label: p.label, pct: p.verzPct })), verzDoel, '#1c4f9c')
+      || '<p class="voetnoot">Nog geen trend beschikbaar (minimaal 2 periodes nodig).</p>';
+    const financTrend = bouwSvgTellingChart(geschiedenisPersoon.map(p => ({ label: p.label, aantal: p.finAantal })), '#1f8a5f')
+      || '<p class="voetnoot">Nog geen trend beschikbaar (minimaal 2 periodes nodig).</p>';
+
+    return `<div class="detail" data-idx="${i}" hidden>
+      <div class="kaart">
+        <h2>${r.medewerker}</h2>
+        <div class="statrij">
+          <div class="stat">
+            <div class="label">Verzekeringen (jaar)</div>
+            <div class="waarde">${r.totaal}${verzPct !== null ? ` <span class="${verzGoed ? 'vink-goed' : 'vink-fout'}">(${verzPct}% ${verzGoed ? '✓' : '✗'})</span>` : ''}</div>
+            <div class="voetnoot">Doel: ${verzDoel}% · ${r.afleveringen} afleveringen</div>
+          </div>
+          <div class="stat">
+            <div class="label">Financieringen (jaar)</div>
+            <div class="waarde">${heeftFinanc ? r.financAantal : '–'}${heeftFinanc && r.financDoel !== null ? ` <span class="${financGoed ? 'vink-goed' : 'vink-fout'}">(${financPct}% ${financGoed ? '✓' : '✗'})</span>` : ''}</div>
+            <div class="voetnoot">${r.financDoel !== null ? `Doel: ${r.financDoel}%` : 'Geen doel bekend'}</div>
+          </div>
+        </div>
+        <p style="margin-bottom:4px;font-size:12px;color:var(--muted);">Verzekeringsconversie per periode</p>
+        ${verzTrend}
+        <p style="margin:14px 0 4px;font-size:12px;color:var(--muted);">Aantal financieringen per periode</p>
+        ${financTrend}
+        <p class="voetnoot">Het financieringspercentage hierboven komt rechtstreeks uit de rapportage; de exacte noemer daarvan wordt niet gepubliceerd, dus de trendgrafiek toont het aantal i.p.v. een percentage.</p>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F&amp;I-scores — ${managerNaam}</title>
+<style>
+  :root{--bg:#f5f7fb;--surface:#fff;--surface-2:#eef1f8;--border:#dde3ef;--text:#161b26;--muted:#5c6579;--accent:#1c4f9c;--goed:#1f8a5f;--fout:#c0392b;}
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
+  .layout{display:flex;max-width:960px;margin:0 auto;min-height:100vh;}
+  .zijbalk{width:260px;flex-shrink:0;border-right:1px solid var(--border);padding:20px 14px;background:var(--surface);}
+  .inhoud{flex:1;padding:24px 28px;min-width:0;}
+  h1{font-size:17px;margin:0 0 2px;}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 18px;}
+  .verkoperlijst{list-style:none;margin:0;padding:0;}
+  .verkoperlijst li{padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;margin-bottom:2px;display:flex;justify-content:space-between;gap:6px;align-items:center;}
+  .verkoperlijst li:hover{background:var(--surface-2);}
+  .verkoperlijst li.actief{background:var(--accent);color:#fff;}
+  .badges{font-size:11px;opacity:.9;white-space:nowrap;}
+  .kaart{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:16px;}
+  .kaart h2{font-size:14px;margin:0 0 12px;}
+  .statrij{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px;}
+  .stat{min-width:150px;}
+  .stat .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;}
+  .stat .waarde{font-size:20px;font-weight:700;}
+  .vink-goed{color:var(--goed);}
+  .vink-fout{color:var(--fout);}
+  .detail[hidden]{display:none;}
+  .voetnoot{font-size:11px;color:var(--muted);margin-top:4px;}
+  @media (max-width:640px){.layout{flex-direction:column;}.zijbalk{width:auto;border-right:none;border-bottom:1px solid var(--border);}}
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="zijbalk">
+    <h1>${managerNaam}</h1>
+    <p class="sub">${scopeLabel} — t/m week ${data.isoWeek} (${eindeWeek})</p>
+    <ul class="verkoperlijst" id="lijst">
+      ${liItems}
+    </ul>
+  </div>
+  <div class="inhoud">
+    ${teamKaart}
+    <div id="details">
+      ${detailPanels}
+    </div>
+  </div>
+</div>
+<script>
+  function toon(idx) {
+    document.querySelectorAll('#details .detail').forEach(function (d) { d.hidden = d.dataset.idx !== String(idx); });
+    document.querySelectorAll('#lijst li').forEach(function (li) { li.classList.toggle('actief', li.dataset.idx === String(idx)); });
+  }
+  document.querySelectorAll('#lijst li').forEach(function (li) {
+    li.addEventListener('click', function () { toon(li.dataset.idx); });
+  });
+  if (document.querySelector('#lijst li')) toon(0);
+<\/script>
+</body>
+</html>`;
 }
 
 /* ============================================================
@@ -831,14 +1088,14 @@ el('btn-verwerk').addEventListener('click', async () => {
     huidigeData.vorigJaar = vindVorigJaarSnapshot(huidigeData.geschiedenis, huidigeData.isoJaar, huidigeData.isoWeek);
     werkGeschiedenisInfoBij();
 
-    teams = groepeerInTeams(berekenWeekRijen(huidigeData.rijen, vorige));
+    teams = groepeerPerManager(berekenWeekRijen(huidigeData.rijen, vorige));
     const teamNamen = Object.keys(teams).sort();
 
     const select = el('select-team');
-    select.innerHTML = teamNamen.map(naam => `<option value="${naam}">${naam} (${teams[naam].length})</option>`).join('');
+    select.innerHTML = teamNamen.map(naam => `<option value="${naam}">${labelVoorManager(naam, teams[naam])}</option>`).join('');
     el('status-line').textContent =
       (geparsed.length > 1 ? `${geparsed.length} rapportages verwerkt (week ${geparsed[0].isoWeek} t/m ${huidigeData.isoWeek}). ` : '') +
-      `${teamNamen.length} teams in week ${huidigeData.isoWeek} (${huidigeData.isoJaar}). ` +
+      `${teamNamen.length} teamleiders/salesmanagers beschikbaar in week ${huidigeData.isoWeek} (${huidigeData.isoJaar}). ` +
       (vorige ? `Periodecijfers t.o.v. week ${vorige.isoWeek}.` : 'Nog geen eerdere upload — periodecijfers verschijnen zodra er een tweede rapportage is.');
     el('panel-teams').style.display = '';
 
@@ -936,6 +1193,20 @@ el('btn-download').addEventListener('click', () => {
   const a = document.createElement('a');
   a.href = url;
   a.download = `${onderwerp.replace(/[^a-z0-9]+/gi, '-') || 'team-scores'}.eml`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+el('btn-rapport').addEventListener('click', () => {
+  const managerNaam = el('select-team').value;
+  const html = bouwInteractiefRapportHtml(managerNaam, teams[managerNaam], huidigeData);
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `fi-scorecard-${managerNaam.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-week${huidigeData.isoWeek}.html`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
