@@ -70,6 +70,25 @@
 
   .acties { display: flex; gap: 10px; align-items: center; }
   .kopieer-status { font-size: 12px; color: var(--muted); }
+
+  #fi-manager-inhoud h3 { font-size: 13px; margin: 22px 0 8px; }
+  #fi-manager-inhoud h3:first-child { margin-top: 0; }
+  #fi-manager-inhoud ul { margin: 0; padding-left: 20px; font-size: 13px; }
+  #fi-manager-inhoud li { margin-bottom: 4px; }
+  .heatmap-wrap { overflow-x: auto; }
+  table.heatmap { border-collapse: collapse; font-size: 12.5px; }
+  table.heatmap th, table.heatmap td { padding: 7px 10px; text-align: center; border: 1px solid var(--border); }
+  table.heatmap th { background: var(--surface-2); font-weight: 600; font-size: 11px; }
+  table.heatmap th:first-child, table.heatmap td:first-child { text-align: left; font-weight: 600; }
+  td.heatmap-goed { background: rgba(31,138,95,.18); color: #1f8a5f; font-weight: 600; }
+  td.heatmap-midden { background: rgba(214,158,46,.18); color: #92660f; font-weight: 600; }
+  td.heatmap-fout { background: rgba(192,57,43,.16); color: #c0392b; font-weight: 600; }
+  td.heatmap-leeg { color: var(--muted); }
+  table.aandacht-tabel { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  table.aandacht-tabel th, table.aandacht-tabel td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+  table.aandacht-tabel th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .vink-goed { color: var(--goed); font-weight: 600; }
+  .vink-fout { color: #c0392b; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -131,6 +150,11 @@
       <button class="btn-primary" id="btn-kopieren" type="button">📋 Kopiëren voor Outlook</button>
       <span class="kopieer-status" id="kopieer-status"></span>
     </div>
+  </div>
+
+  <div class="panel" id="panel-fi-manager-toggle" style="display:none;">
+    <button class="btn-secondary btn-block" id="btn-fi-manager" type="button">📊 F&amp;I Manager-overzicht — bedrijfsbreed (alleen voor jou, gaat nooit in een mail)</button>
+    <div id="fi-manager-inhoud" style="display:none;margin-top:18px;"></div>
   </div>
 </div>
 
@@ -1068,6 +1092,17 @@ function berekenBadgeWaarden(r) {
   return { verzPct, verzDoel, verzVerschil, heeftFinanc, financPct, financVerschil };
 }
 
+// "Actie nodig": één vaste, uitgelegde drempel (10 procentpunt onder doel op minstens één
+// product), overal in de tool hetzelfde — dit is een filter, geen advies. Gedeeld tussen de
+// bijlage en het bedrijfsbrede F&I Manager-overzicht zodat "actie nodig" nooit per weergave
+// een andere betekenis krijgt.
+const ACTIE_NODIG_DREMPEL_PP = 10;
+function heeftActieNodig(r) {
+  const w = berekenBadgeWaarden(r);
+  return (w.verzVerschil !== null && w.verzVerschil <= -ACTIE_NODIG_DREMPEL_PP)
+    || (w.financVerschil !== null && w.financVerschil <= -ACTIE_NODIG_DREMPEL_PP);
+}
+
 function bouwBadge(label, verschil) {
   if (verschil === null) return '';
   const opKoers = verschil >= 0;
@@ -1164,10 +1199,42 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
       ${teamGrafiek}
     </div>`;
 
+  // 4-kwadrantenweergave: wie scoort goed/slecht op welke combinatie van de twee producten.
+  // Gebruikt dezelfde ✓/✗-waarden als de badges — geen nieuwe aanname, puur een andere ordening
+  // ervan. Wie op geen van beide een doel heeft (onbekend) valt buiten de matrix.
+  const kwadranten = { beide: [], alleenVerz: [], alleenFinanc: [], geen: [] };
+  rijen.forEach(r => {
+    const w = berekenBadgeWaarden(r);
+    const verzOk = w.verzVerschil !== null ? w.verzVerschil >= 0 : null;
+    const financOk = w.financVerschil !== null ? w.financVerschil >= 0 : null;
+    if (verzOk === null && financOk === null) return;
+    if (verzOk !== false && financOk !== false) kwadranten.beide.push(r);
+    else if (verzOk !== false && financOk === false) kwadranten.alleenVerz.push(r);
+    else if (verzOk === false && financOk !== false) kwadranten.alleenFinanc.push(r);
+    else kwadranten.geen.push(r);
+  });
+  const kwadrantCel = (titel, lijst, kleurKlasse) => `
+    <div class="kwadrant-cel ${kleurKlasse}">
+      <div class="kwadrant-titel">${titel}</div>
+      <div class="kwadrant-aantal">${lijst.length}</div>
+      <div class="kwadrant-namen">${lijst.map(r => r.medewerker).join(', ') || '—'}</div>
+    </div>`;
+  const kwadrantKaart = `
+    <div class="kaart">
+      <h2>Wie scoort waarop</h2>
+      <div class="kwadrant-grid">
+        ${kwadrantCel('Beide op doel', kwadranten.beide, 'kwadrant-goed')}
+        ${kwadrantCel('Alleen verzekering op doel', kwadranten.alleenVerz, 'kwadrant-half')}
+        ${kwadrantCel('Alleen financiering op doel', kwadranten.alleenFinanc, 'kwadrant-half')}
+        ${kwadrantCel('Beide onder doel', kwadranten.geen, 'kwadrant-fout')}
+      </div>
+    </div>`;
+
   // Gesorteerd op grootste probleem eerst (meest negatieve afwijking tov doel), niet alfabetisch —
   // dat is wat een manager onder tijdsdruk als eerste wil zien. Wie nergens op te beoordelen valt
   // (geen enkel doel bekend) komt onderaan. Dezelfde volgorde geldt voor lijst én detailpanelen, dus
-  // de data-idx's blijven gekoppeld.
+  // de data-idx's blijven gekoppeld. De lijst zelf kan de kijker daarna client-side herordenen/
+  // filteren (zie het <script>-blok onderaan) zonder de idx-koppeling te breken.
   const gesorteerdeRijen = [...rijen].sort((a, b) => {
     const afwA = berekenAfwijking(a), afwB = berekenAfwijking(b);
     if (afwA === null && afwB === null) return 0;
@@ -1176,11 +1243,18 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
     return afwA - afwB;
   });
 
+  const distincteLocaties = [...new Set(rijen.map(r => r.locatie))].sort();
+  const locatieFilterHtml = info.type === 'salesmanager' && distincteLocaties.length > 1
+    ? `<select id="filter-locatie"><option value="">Alle vestigingen</option>${distincteLocaties.map(l => `<option value="${l}">${l}</option>`).join('')}</select>`
+    : '';
+
   const liItems = gesorteerdeRijen.map((r, i) => {
     const w = berekenBadgeWaarden(r);
     const isZelf = r.medewerker === managerNaam;
     const locatieRegel = info.type === 'salesmanager' ? `<span class="locatie">${r.locatie}</span>` : '';
-    return `<li data-idx="${i}"><span>${r.medewerker}${isZelf ? ' <span class="zelf-badge">jij</span>' : ''}${locatieRegel}</span><span class="badges">${bouwBadge('V', w.verzVerschil)} ${bouwBadge('F', w.financVerschil)}</span></li>`;
+    const trend = bouwPersoonMaandTrend(`${r.locatie}|${r.merk}|${r.medewerker}`);
+    const trendVerschil = (trend && trend.verschil !== undefined) ? trend.verschil : '';
+    return `<li data-idx="${i}" data-naam="${r.medewerker}" data-locatie="${r.locatie}" data-afl="${r.afleveringen}" data-verzpct="${w.verzPct !== null ? w.verzPct : ''}" data-financpct="${w.financPct !== null ? w.financPct : ''}" data-trendverschil="${trendVerschil}" data-actienodig="${heeftActieNodig(r) ? '1' : '0'}"><span>${r.medewerker}${isZelf ? ' <span class="zelf-badge">jij</span>' : ''}${locatieRegel}</span><span class="badges">${bouwBadge('V', w.verzVerschil)} ${bouwBadge('F', w.financVerschil)}</span></li>`;
   }).join('');
 
   const detailPanels = gesorteerdeRijen.map((r, i) => {
@@ -1262,8 +1336,12 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
   h1{font-size:17px;margin:0 0 2px;}
   .sub{color:var(--muted);font-size:12.5px;margin:0 0 18px;}
   .legenda{font-size:11px;color:var(--muted);margin:0 0 14px;line-height:1.5;}
+  .toolbar{display:flex;flex-direction:column;gap:7px;margin:0 0 12px;padding:10px;background:var(--surface-2);border-radius:8px;}
+  .toolbar select{font-size:12px;padding:5px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:inherit;}
+  .toolbar-check{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);cursor:pointer;}
   .verkoperlijst{list-style:none;margin:0;padding:0;}
   .verkoperlijst li{padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;margin-bottom:2px;display:flex;justify-content:space-between;gap:6px;align-items:flex-start;}
+  .verkoperlijst li[hidden]{display:none;}
   .verkoperlijst li:hover{background:var(--surface-2);}
   .verkoperlijst li.actief{background:var(--accent);color:#fff;}
   .verkoperlijst li.actief .locatie{color:#dbe6f7;}
@@ -1281,7 +1359,15 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
   .vink-fout{color:var(--fout);}
   .detail[hidden]{display:none;}
   .voetnoot{font-size:11px;color:var(--muted);margin-top:4px;}
-  @media (max-width:640px){.layout{flex-direction:column;}.zijbalk{width:auto;border-right:none;border-bottom:1px solid var(--border);}}
+  .kwadrant-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .kwadrant-cel{border-radius:8px;padding:12px 14px;border:1px solid var(--border);}
+  .kwadrant-cel.kwadrant-goed{background:var(--nice-weak, #e5f2ea);border-color:var(--goed);}
+  .kwadrant-cel.kwadrant-fout{background:var(--kritiek-weak, #fbeae8);border-color:var(--fout);}
+  .kwadrant-cel.kwadrant-half{background:var(--surface-2);}
+  .kwadrant-titel{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px;}
+  .kwadrant-aantal{font-size:22px;font-weight:700;margin-bottom:4px;}
+  .kwadrant-namen{font-size:11.5px;color:var(--muted);line-height:1.4;}
+  @media (max-width:640px){.layout{flex-direction:column;}.zijbalk{width:auto;border-right:none;border-bottom:1px solid var(--border);}.kwadrant-grid{grid-template-columns:1fr;}}
 </style>
 </head>
 <body>
@@ -1289,13 +1375,28 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
   <div class="zijbalk">
     <h1>${managerNaam}</h1>
     <p class="sub">${scopeLabel} — t/m week ${data.isoWeek} (${eindeWeek})</p>
-    <p class="legenda">V = verzekering · F = financiering<br>Getal = procentpunt t.o.v. doel (groen = op koers, rood = eronder)<br>Gesorteerd op grootste aandachtspunt eerst</p>
+    <p class="legenda">V = verzekering · F = financiering<br>Getal = procentpunt t.o.v. doel (groen = op koers, rood = eronder)</p>
+    <div class="toolbar">
+      <select id="sorteer">
+        <option value="aandacht">Grootste aandachtspunt eerst</option>
+        <option value="verzekering-laag">Laagste verzekeringsconversie</option>
+        <option value="financiering-laag">Laagste financieringsconversie</option>
+        <option value="trend-dalend">Grootste daling (maand)</option>
+        <option value="trend-stijgend">Grootste stijging (maand)</option>
+        <option value="afleveringen">Meeste afleveringen</option>
+        <option value="naam">Naam (a-z)</option>
+      </select>
+      ${locatieFilterHtml}
+      <label class="toolbar-check"><input type="checkbox" id="filter-actienodig"> Alleen "actie nodig" (≥10pp onder doel)</label>
+      <p class="voetnoot" id="lijst-telling"></p>
+    </div>
     <ul class="verkoperlijst" id="lijst">
       ${liItems}
     </ul>
   </div>
   <div class="inhoud">
     ${teamKaart}
+    ${kwadrantKaart}
     <div id="details">
       ${detailPanels}
     </div>
@@ -1309,10 +1410,167 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
   document.querySelectorAll('#lijst li').forEach(function (li) {
     li.addEventListener('click', function () { toon(li.dataset.idx); });
   });
+
+  // Sorteren/filteren gebeurt puur client-side op de al aanwezige data-attributen — de
+  // detailpanelen blijven gekoppeld op data-idx, dus herordenen van de lijst breekt niets.
+  function toGetal(tekst) { return tekst === '' ? null : parseFloat(tekst); }
+
+  function werkLijstBij() {
+    const lijst = document.getElementById('lijst');
+    const items = [...lijst.querySelectorAll('li')];
+    const sorteerOp = document.getElementById('sorteer').value;
+    const locatieEl = document.getElementById('filter-locatie');
+    const locatieFilter = locatieEl ? locatieEl.value : '';
+    const alleenActieNodig = document.getElementById('filter-actienodig').checked;
+
+    const vergelijkers = {
+      'verzekering-laag': (a, b) => (toGetal(a.dataset.verzpct) ?? 999) - (toGetal(b.dataset.verzpct) ?? 999),
+      'financiering-laag': (a, b) => (toGetal(a.dataset.financpct) ?? 999) - (toGetal(b.dataset.financpct) ?? 999),
+      'trend-dalend': (a, b) => (toGetal(a.dataset.trendverschil) ?? 999) - (toGetal(b.dataset.trendverschil) ?? 999),
+      'trend-stijgend': (a, b) => (toGetal(b.dataset.trendverschil) ?? -999) - (toGetal(a.dataset.trendverschil) ?? -999),
+      'afleveringen': (a, b) => toGetal(b.dataset.afl) - toGetal(a.dataset.afl),
+      'naam': (a, b) => a.dataset.naam.localeCompare(b.dataset.naam),
+    };
+    if (sorteerOp !== 'aandacht' && vergelijkers[sorteerOp]) {
+      items.sort(vergelijkers[sorteerOp]).forEach(li => lijst.appendChild(li));
+    } else {
+      // "aandacht" = de oorspronkelijke, server-side bepaalde volgorde (data-idx oplopend)
+      items.sort((a, b) => Number(a.dataset.idx) - Number(b.dataset.idx)).forEach(li => lijst.appendChild(li));
+    }
+
+    let zichtbaar = 0;
+    items.forEach(li => {
+      const toonLocatie = !locatieFilter || li.dataset.locatie === locatieFilter;
+      const toonActie = !alleenActieNodig || li.dataset.actienodig === '1';
+      const zichtbaarNu = toonLocatie && toonActie;
+      li.hidden = !zichtbaarNu;
+      if (zichtbaarNu) zichtbaar++;
+    });
+    document.getElementById('lijst-telling').textContent = zichtbaar + ' van ' + items.length + ' verkopers getoond';
+
+    // als de actief geselecteerde persoon wegvalt door het filter, spring naar de eerste zichtbare
+    const actief = lijst.querySelector('li.actief');
+    if (actief && actief.hidden) {
+      const eersteZichtbare = items.find(li => !li.hidden);
+      if (eersteZichtbare) toon(eersteZichtbare.dataset.idx);
+    }
+  }
+  document.getElementById('sorteer').addEventListener('change', werkLijstBij);
+  document.getElementById('filter-actienodig').addEventListener('change', werkLijstBij);
+  const locatieFilterEl = document.getElementById('filter-locatie');
+  if (locatieFilterEl) locatieFilterEl.addEventListener('change', werkLijstBij);
+  werkLijstBij();
   if (document.querySelector('#lijst li')) toon(0);
 <\/script>
 </body>
 </html>`;
+}
+
+/* ============================================================
+   F&I MANAGER-OVERZICHT — bedrijfsbreed, alleen voor Jurgen zelf (blijft in de tool, gaat nooit
+   in een mail of bijlage). Beantwoordt de vragen uit de audit: welke vestigingen/merken
+   presteren structureel goed/slecht, waar verandert een trend duidelijk, wie valt bedrijfsbreed
+   op. Draait rechtstreeks op huidigeData/teams — geen aparte export nodig.
+   ============================================================ */
+function bouwHeatmapHtml(rijen) {
+  const locaties = [...new Set(rijen.map(r => r.locatie))].sort();
+  const merken = [...new Set(rijen.map(r => r.merk))].sort();
+  const cellData = {};
+  rijen.forEach(r => {
+    const key = `${r.locatie}|${r.merk}`;
+    if (!cellData[key]) cellData[key] = { verz: 0, afl: 0 };
+    cellData[key].verz += r.totaal;
+    cellData[key].afl += r.afleveringen;
+  });
+  const doelPct = 25;
+  const headerRij = `<tr><th>Vestiging \\ Merk</th>${merken.map(m => `<th>${m}</th>`).join('')}</tr>`;
+  const rijenHtml = locaties.map(loc => {
+    const cellen = merken.map(merk => {
+      const d = cellData[`${loc}|${merk}`];
+      if (!d || d.afl === 0) return `<td class="heatmap-leeg">–</td>`;
+      const pct = Math.round((d.verz / d.afl) * 100);
+      const verschil = pct - doelPct;
+      const kleurKlasse = verschil >= 0 ? 'heatmap-goed' : verschil >= -10 ? 'heatmap-midden' : 'heatmap-fout';
+      return `<td class="${kleurKlasse}" title="${loc} ${merk}: ${d.afl} afleveringen, ${verschil > 0 ? '+' : ''}${verschil}pp tov doel">${pct}%</td>`;
+    }).join('');
+    return `<tr><th>${loc}</th>${cellen}</tr>`;
+  }).join('');
+  return `<div class="heatmap-wrap"><table class="heatmap"><thead>${headerRij}</thead><tbody>${rijenHtml}</tbody></table></div>`;
+}
+
+// Top 5 stijgers/dalers over ALLE verkopers heen, ongeacht bij wie ze horen — dat is precies wat
+// een teamleider/salesmanager-scoped rapportage niet kan laten zien (bevinding 10 uit de audit).
+function bouwStijgersDalersBedrijfsbreed(rijen) {
+  const metTrend = rijen.map(r => {
+    const sleutel = `${r.locatie}|${r.merk}|${r.medewerker}`;
+    return { r, trend: bouwPersoonMaandTrend(sleutel) };
+  }).filter(x => x.trend && x.trend.verschil !== undefined);
+
+  const regel = (x) => `<li>${x.r.medewerker} <span class="voetnoot" style="color:var(--muted);">(${x.r.locatie} ${x.r.merk})</span> — ${x.trend.pijl} ${x.trend.verschil > 0 ? '+' : ''}${x.trend.verschil}pp</li>`;
+  const stijgers = [...metTrend].filter(x => x.trend.verschil > 0).sort((a, b) => b.trend.verschil - a.trend.verschil).slice(0, 5);
+  const dalers = [...metTrend].filter(x => x.trend.verschil < 0).sort((a, b) => a.trend.verschil - b.trend.verschil).slice(0, 5);
+  return {
+    stijgersHtml: stijgers.map(regel).join('') || '<li style="color:var(--muted);">Geen duidelijke stijgers deze maand.</li>',
+    dalersHtml: dalers.map(regel).join('') || '<li style="color:var(--muted);">Geen duidelijke dalers deze maand.</li>',
+  };
+}
+
+// Per merk (over alle vestigingen heen) dezelfde trendclassificatie als bij een individuele
+// manager, maar dan merk-breed — beantwoordt "welke merken verbeteren/verslechteren" (sectie 18).
+function bouwMerktrendHtml(rijen, maandReeks) {
+  const merken = [...new Set(rijen.map(r => r.merk))].sort();
+  return merken.map(merk => {
+    const reeks = maandReeks.map(m => {
+      const rijenVoorMerk = m.rijen.filter(r => r.merk === merk);
+      const afl = rijenVoorMerk.reduce((s, r) => s + r.maandAfl, 0);
+      const verz = rijenVoorMerk.reduce((s, r) => s + r.maandVerz, 0);
+      const heeftCorrectie = rijenVoorMerk.some(r => r.maandCorrectie);
+      return (!heeftCorrectie && afl > 0) ? Math.round((verz / afl) * 100) : null;
+    });
+    const trend = classificeerTrend(reeks);
+    return `<li><strong>${merk}</strong>: ${trend.pijl} ${trend.label}</li>`;
+  }).join('');
+}
+
+// Dezelfde "actie nodig"-drempel als in de bijlage (heeftActieNodig), nu bedrijfsbreed en met
+// vermelding van de verantwoordelijke teamleider(s)/salesmanager(s) per rij.
+function bouwVraagtAandachtBedrijfsbreed(rijen) {
+  const lijst = rijen
+    .filter(heeftActieNodig)
+    .map(r => ({ r, afwijking: berekenAfwijking(r) }))
+    .sort((a, b) => a.afwijking - b.afwijking);
+  return lijst.map(x => {
+    const w = berekenBadgeWaarden(x.r);
+    const managers = bepaalManagersVoorRij(x.r).join(', ') || '—';
+    return `<tr><td>${x.r.medewerker}</td><td>${x.r.locatie} ${x.r.merk}</td><td>${managers}</td><td>${bouwBadge('V', w.verzVerschil)}</td><td>${bouwBadge('F', w.financVerschil)}</td></tr>`;
+  }).join('');
+}
+
+function toonFIManagerOverzicht() {
+  if (!huidigeData) return;
+  const rijen = huidigeData.rijen;
+  const { stijgersHtml, dalersHtml } = bouwStijgersDalersBedrijfsbreed(rijen);
+  const aandachtRijen = bouwVraagtAandachtBedrijfsbreed(rijen);
+  const aandachtAantal = rijen.filter(heeftActieNodig).length;
+
+  el('fi-manager-inhoud').innerHTML = `
+    <h3>Vestiging × merk — verzekeringsconversie (jaar)</h3>
+    ${bouwHeatmapHtml(rijen)}
+    <div style="display:flex;gap:24px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:220px;">
+        <h3>📈 Grootste stijgers (${huidigeData.huidigeMaandNaam})</h3>
+        <ul>${stijgersHtml}</ul>
+      </div>
+      <div style="flex:1;min-width:220px;">
+        <h3>📉 Grootste dalers (${huidigeData.huidigeMaandNaam})</h3>
+        <ul>${dalersHtml}</ul>
+      </div>
+    </div>
+    <h3>Merktrend</h3>
+    <ul>${bouwMerktrendHtml(rijen, huidigeData.maandReeks)}</ul>
+    <h3>Vraagt aandacht bedrijfsbreed (${aandachtAantal}, ≥${ACTIE_NODIG_DREMPEL_PP}pp onder doel)</h3>
+    <div class="heatmap-wrap"><table class="aandacht-tabel"><thead><tr><th>Verkoper</th><th>Locatie / merk</th><th>Teamleider / salesmanager</th><th>V</th><th>F</th></tr></thead><tbody>${aandachtRijen || '<tr><td colspan="5" style="color:var(--muted);">Niemand voldoet momenteel aan deze drempel.</td></tr>'}</tbody></table></div>
+  `;
 }
 
 /* ============================================================
@@ -1431,6 +1689,8 @@ el('btn-verwerk').addEventListener('click', async () => {
         ? `<strong style="color:#c0392b;">⚠ ${alleWaarschuwingen.length} waarschuwing(en) — controleer voor verzending:</strong><ul style="margin:6px 0 0;padding-left:18px;">${alleWaarschuwingen.map(w => `<li>${w}</li>`).join('')}</ul>`
         : '<span style="color:var(--goed);">✓ Geen parserwaarschuwingen.</span>');
     el('panel-teams').style.display = '';
+    el('panel-fi-manager-toggle').style.display = '';
+    if (el('fi-manager-inhoud').style.display !== 'none') toonFIManagerOverzicht();
 
     if (teamNamen.length > 0) genereerTeamMail(teamNamen[0]);
   } catch (err) {
@@ -1544,6 +1804,13 @@ el('btn-rapport').addEventListener('click', () => {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+});
+
+el('btn-fi-manager').addEventListener('click', () => {
+  const inhoud = el('fi-manager-inhoud');
+  const wordtZichtbaar = inhoud.style.display === 'none';
+  inhoud.style.display = wordtZichtbaar ? '' : 'none';
+  if (wordtZichtbaar) toonFIManagerOverzicht();
 });
 </script>
 </body>
