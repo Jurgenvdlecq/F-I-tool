@@ -320,11 +320,17 @@ function parseFinancieringenTabel(paginas) {
 
 // Koppelt financieringen aan de verzekeringen-rijen op locatie|merk|medewerker. financAantal blijft
 // `null` (niet 0) als er geen match gevonden is — zo verwarren we "geen data" nooit met "bevestigd 0".
+// Retourneert ook `ontkoppeld`: het aantal verzekeringen-rijen waarvoor geen financieringsrij met
+// dezelfde sleutel is gevonden. Dat aantal werd voorheen nergens geteld of getoond, waardoor een
+// mislukte koppeling (bv. door een kleine naam-afwijking tussen de twee brontabellen) volledig
+// onopgemerkt bleef.
 function koppelFinancieringen(verzekeringenRijen, financieringenRijen) {
   const financMap = new Map();
   financieringenRijen.forEach(r => financMap.set(`${r.locatie}|${r.merk}|${r.medewerker}`, r));
-  return verzekeringenRijen.map(r => {
+  let ontkoppeld = 0;
+  const rijen = verzekeringenRijen.map(r => {
     const f = financMap.get(`${r.locatie}|${r.merk}|${r.medewerker}`);
+    if (!f) ontkoppeld++;
     return {
       ...r,
       financAantal: f ? f.financAantal : null,
@@ -332,6 +338,7 @@ function koppelFinancieringen(verzekeringenRijen, financieringenRijen) {
       financRealisatie: f ? f.financRealisatie : null,
     };
   });
+  return { rijen, ontkoppeld };
 }
 
 async function parseSalesrapportagePdf(file) {
@@ -394,6 +401,12 @@ function wisGeschiedenis() {
 // Elk verschil hoort bij de periode van de látere snapshot. Ontbreekt iemand in de eerdere
 // snapshot (nieuw in dienst / andere vestiging), dan telt die periode niet mee — anders zou
 // z'n volledige jaarstand als één periode worden gezien en de trend compleet vertekenen.
+//
+// Een delta wordt NIET op 0 geklemd als hij negatief is: een dalende YTD-teller tussen twee
+// uploads is altijd een correctie of annulering in de bron, nooit "geen activiteit". Zo'n
+// periode krijgt daarom `correctie: true` en de aanroepende code laat 'm bewust weg uit
+// grafiek/percentage i.p.v. hem te verbergen als een gewone (nul-)periode — anders verdwijnt
+// precies het signaal dat een manager zou willen zien.
 function bouwWeekDeltas(geschiedenis, isoJaar) {
   const jaarSnaps = geschiedenis.filter(s => s.isoJaar === isoJaar).sort((a, b) => a.isoWeek - b.isoWeek);
   const periodes = [];
@@ -404,63 +417,16 @@ function bouwWeekDeltas(geschiedenis, isoJaar) {
     jaarSnaps[i].rijen.forEach(r => {
       const p = vorige.get(`${r.locatie}|${r.merk}|${r.medewerker}`);
       if (!p) return;
+      const verz = r.totaal - p.totaal;
+      const afl = r.afleveringen - p.afleveringen;
+      const fin = (r.financAantal !== null && p.financAantal !== null) ? r.financAantal - p.financAantal : null;
       perPersoon.set(`${r.locatie}|${r.merk}|${r.medewerker}`, {
-        verz: Math.max(0, r.totaal - p.totaal),
-        afl: Math.max(0, r.afleveringen - p.afleveringen),
-        fin: (r.financAantal !== null && p.financAantal !== null) ? Math.max(0, r.financAantal - p.financAantal) : null,
+        verz, afl, fin, correctie: verz < 0 || afl < 0 || (fin !== null && fin < 0),
       });
     });
     periodes.push({ isoWeek: jaarSnaps[i].isoWeek, perPersoon });
   }
   return periodes;
-}
-
-// Vergelijkt per medewerker de recente periode met de periode dáárvoor (twee even lange
-// vensters, samen de volledige beschikbare geschiedenis, max 4 periodes per venster). Vergelijkt
-// conversie% i.p.v. aantallen, zodat iemand met een rustige periode niet automatisch "daalt".
-// Beide vensters hebben een minimum aantal afleveringen nodig — anders is het ruis, geen trend.
-const TREND_DREMPEL_AFLEVERINGEN = 3;
-
-function berekenPersoonsTrends(geschiedenis, isoJaar) {
-  const periodes = bouwWeekDeltas(geschiedenis, isoJaar);
-  if (periodes.length < 2) return null;
-
-  const vensterLengte = Math.min(4, Math.floor(periodes.length / 2));
-  const recent = periodes.slice(periodes.length - vensterLengte);
-  const eerder = periodes.slice(periodes.length - vensterLengte * 2, periodes.length - vensterLengte);
-
-  const somVenster = (venster) => {
-    const map = new Map();
-    venster.forEach(p => {
-      p.perPersoon.forEach((waarden, sleutel) => {
-        if (!map.has(sleutel)) map.set(sleutel, { verz: 0, afl: 0, fin: 0 });
-        const s = map.get(sleutel);
-        s.verz += waarden.verz; s.afl += waarden.afl; s.fin += (waarden.fin || 0);
-      });
-    });
-    return map;
-  };
-
-  const recentMap = somVenster(recent), eerderMap = somVenster(eerder);
-  const trends = new Map();
-  recentMap.forEach((r, sleutel) => {
-    const e = eerderMap.get(sleutel);
-    if (!e) return;
-    if (r.afl < TREND_DREMPEL_AFLEVERINGEN || e.afl < TREND_DREMPEL_AFLEVERINGEN) return;
-    const recentPct = (r.verz / r.afl) * 100;
-    const eerderPct = (e.verz / e.afl) * 100;
-    trends.set(sleutel, {
-      recentPct: Math.round(recentPct), eerderPct: Math.round(eerderPct),
-      verschil: Math.round(recentPct - eerderPct),
-      recentAfl: r.afl, eerderAfl: e.afl,
-    });
-  });
-
-  return {
-    trends, vensterLengte,
-    recentWeken: recent.map(p => p.isoWeek),
-    eerderWeken: eerder.map(p => p.isoWeek),
-  };
 }
 
 // Zelfde week vorig jaar (of de dichtstbijzijnde eerdere week daarvan) — alleen beschikbaar als
@@ -470,26 +436,6 @@ function vindVorigJaarSnapshot(geschiedenis, isoJaar, isoWeek) {
   const vorigJaar = geschiedenis.filter(s => s.isoJaar === isoJaar - 1 && s.isoWeek <= isoWeek);
   if (vorigJaar.length === 0) return null;
   return vorigJaar.sort((a, b) => b.isoWeek - a.isoWeek)[0];
-}
-
-// Periodecijfers = huidige YTD − YTD van de vorige upload. Nieuwe medewerkers (geen vorige rij)
-// tellen volledig als "deze periode". weekFin blijft null als de financieringsdata aan één van
-// beide kanten ontbreekt — onbekend is niet hetzelfde als nul.
-function berekenWeekRijen(rijen, vorigeSnapshot) {
-  if (!vorigeSnapshot) return rijen.map(r => ({ ...r, weekAfl: null, weekVerz: null, weekFin: null }));
-  const vorigeMap = new Map();
-  vorigeSnapshot.rijen.forEach(r => vorigeMap.set(`${r.locatie}|${r.merk}|${r.medewerker}`, r));
-  return rijen.map(r => {
-    const p = vorigeMap.get(`${r.locatie}|${r.merk}|${r.medewerker}`);
-    const weekAfl = Math.max(0, r.afleveringen - (p ? p.afleveringen : 0));
-    const weekVerz = Math.max(0, r.totaal - (p ? p.totaal : 0));
-    let weekFin = null;
-    if (r.financAantal !== null) {
-      const vorigeFin = p ? p.financAantal : 0;
-      if (vorigeFin !== null) weekFin = Math.max(0, r.financAantal - vorigeFin);
-    }
-    return { ...r, weekAfl, weekVerz, weekFin };
-  });
 }
 
 /* ============================================================
@@ -651,10 +597,14 @@ function bouwVorigJaarTekst(rijen, vorigJaarSnapshot) {
 
 function voornaam(volledigeNaam) { return volledigeNaam.split(' ')[0]; }
 
-// Eén score per persoon die verzekering én financiering gelijkwaardig weegt: het gemiddelde van
-// hoeveel procentpunt iemand boven/onder het eigen doel zit, per product waarvoor doel-data bekend
-// is. Ontbreekt beide, dan is er niets zinvols te zeggen (null) — dat sluit deze persoon uit van de
-// aandachtspunten/koplopers-selectie i.p.v. hem stilzwijgend op 0 te zetten.
+// Bepaalt hoe dringend iemands SLECHTSTE product afwijkt van het eigen doel (in procentpunt).
+// Dit is bewust het MINIMUM van de twee afwijkingen, niet het gemiddelde — een gemiddelde zou
+// verzekering en financiering tot één onzichtbare samengestelde F&I-score versmelten, wat een
+// manager niet kan navragen ("waarom staat hij hier?") omdat het getal nergens getoond wordt.
+// Het minimum is wél uitlegbaar: "we sorteren op het product waar iemand het verst van zijn
+// doel afzit", zonder de twee producten te vermengen. Ontbreekt beide, dan is er niets zinvols
+// te zeggen (null) — dat sluit deze persoon uit van de aandachtspunten/koplopers-selectie i.p.v.
+// hem stilzwijgend op 0 te zetten.
 function berekenAfwijking(r) {
   const afwijkingen = [];
   if (r.afleveringen > 0) {
@@ -666,7 +616,7 @@ function berekenAfwijking(r) {
     afwijkingen.push(financPct - r.financDoel);
   }
   if (afwijkingen.length === 0) return null;
-  return afwijkingen.reduce((a, b) => a + b, 0) / afwijkingen.length;
+  return Math.min(...afwijkingen);
 }
 
 // Eén zin per persoon die verzekering én financiering combineert — dit vervangt de losse
@@ -695,7 +645,9 @@ function bouwCombinatieZin(r) {
   return `<strong>${r.medewerker}</strong>: ${opKoers ? 'op koers voor' : 'blijft achter op'} ${enige}.`;
 }
 
-const HIGHLIGHT_DREMPEL_AFLEVERINGEN = 3;
+// 5 afleveringen als ondergrens (i.p.v. eerder 3) — bij minder is een percentage te grillig om
+// er een aandachtspunt/koploper-conclusie aan te verbinden.
+const HIGHLIGHT_DREMPEL_AFLEVERINGEN = 5;
 
 // Aandachtspunten en koplopers, gecombineerd over beide producten — de kern van de korte e-mail.
 // Alleen personen met genoeg volume tellen mee (zie berekenAfwijking/HIGHLIGHT_DREMPEL), anders kan
@@ -737,7 +689,7 @@ function bouwTeamTotaalRegel(rijen) {
 // vrijwel altijd groter dan een locatie-scope, dus kruislings vergelijken zou oneerlijk zijn.
 // Kleine scopes (weinig afleveringen) tellen bewust niet mee — anders kan 1 aflevering toevallig op
 // 0% of 100% conversie staan.
-const RANKING_DREMPEL_AFLEVERINGEN = 3;
+const RANKING_DREMPEL_AFLEVERINGEN = 5;
 
 function berekenTeamRanking(teams, managerNaam) {
   const info = MANAGER_INFO[managerNaam];
@@ -783,8 +735,14 @@ function genereerTeamMail(managerNaam) {
     ? `<p>Hoi ${voornaam(managerNaam)},</p><p>Hierbij de ${info.merk}-scores van al je verkopers (alle vestigingen), t/m week ${huidigeData.isoWeek} (${eindeWeek}).</p>`
     : `<p>Hoi ${voornaam(managerNaam)},</p><p>Hierbij de scores van je team (${info.locatie} ${info.merk}), t/m week ${huidigeData.isoWeek} (${eindeWeek}).</p>`;
 
+  // Getemperd: het gaat om boven/onder het gemiddelde, niet om een wedstrijd — de exacte plek
+  // staat er nog wel bij, maar is niet meer de opener van de zin.
   const vergelijkingRegel = ranking.rang
-    ? `<p>Ter vergelijking: met ${ranking.eigenPct}% verzekeringsconversie sta je op plek ${ranking.rang} van de ${ranking.totaalTeams} ${ranking.vergelijkingsLabel} (gemiddelde: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`
+    ? (() => {
+        const gem = Math.round(ranking.bedrijfsGemiddelde * 100);
+        const richting = ranking.eigenPct > gem ? 'boven' : ranking.eigenPct < gem ? 'onder' : 'gelijk aan';
+        return `<p>Met ${ranking.eigenPct}% verzekeringsconversie zit je ${richting} het gemiddelde van ${ranking.vergelijkingsLabel} (${gem}%) — plek ${ranking.rang} van ${ranking.totaalTeams}.</p>`;
+      })()
     : `<p>Te weinig afleveringen voor een zinvolle vergelijking met ${ranking.vergelijkingsLabel} (gemiddelde conversie: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).</p>`;
 
   const html = `
@@ -866,12 +824,15 @@ function bouwSvgLijnChart(punten, doelPct, kleur) {
 function bouwSvgTellingChart(punten, kleur) {
   const geldig = punten.filter(p => p.aantal !== null);
   if (geldig.length < 2) return '';
-  const breedte = 300, hoogte = 76, padding = 30;
+  // Zelfde asymmetrische marge als bouwSvgLijnChart (links breder voor de y-as-cijfers) — bij
+  // aantallen van 3+ cijfers zou een symmetrische marge dezelfde afknip-fout kunnen geven die
+  // eerder bij de doel-tekst in de lijngrafiek optrad.
+  const breedte = 300, hoogte = 76, linksPad = 26, rechtsPad = 12;
   const maxAantal = Math.max(1, ...geldig.map(p => p.aantal));
-  const stapX = (breedte - padding * 2) / (punten.length - 1);
-  const xVoor = i => padding + i * stapX;
-  const bovenY = padding - 8;
-  const basisY = hoogte - padding;
+  const stapX = (breedte - linksPad - rechtsPad) / (punten.length - 1);
+  const xVoor = i => linksPad + i * stapX;
+  const bovenY = 22;
+  const basisY = hoogte - 22;
 
   const balken = punten.map((p, i) => {
     if (p.aantal === null) return '';
@@ -880,11 +841,15 @@ function bouwSvgTellingChart(punten, kleur) {
   }).join('');
   const labels = punten.map((p, i) => `<text x="${xVoor(i)}" y="${hoogte - 4}" font-size="8" fill="#6b7280" text-anchor="middle">${p.label}</text>`).join('');
   const asLabels = `
-    <text x="${padding - 5}" y="${bovenY + 3}" font-size="8" fill="#9ca3af" text-anchor="end">${maxAantal}</text>
-    <text x="${padding - 5}" y="${basisY + 3}" font-size="8" fill="#9ca3af" text-anchor="end">0</text>`;
+    <text x="${linksPad - 5}" y="${bovenY + 3}" font-size="8" fill="#9ca3af" text-anchor="end">${maxAantal}</text>
+    <text x="${linksPad - 5}" y="${basisY + 3}" font-size="8" fill="#9ca3af" text-anchor="end">0</text>`;
 
   return `<svg width="${breedte}" height="${hoogte}" viewBox="0 0 ${breedte} ${hoogte}" style="max-width:100%;">${balken}${labels}${asLabels}</svg>`;
 }
+
+// Onder dit aantal afleveringen is een percentage te grillig om als hard cijfer te lezen — de
+// bijlage toont dan expliciet "indicatief" i.p.v. het gewoon als een normaal cijfer te tonen.
+const VOLUME_DREMPEL_AFLEVERINGEN = 5;
 
 // Eén plek waar verzekering + financiering van een rij worden omgezet naar wat de bijlage nodig
 // heeft: huidige %, doel, en het verschil in procentpunt (i.p.v. alleen een boolean ✓/✗) — dat
@@ -914,11 +879,16 @@ function bouwPersoonsGeschiedenis(sleutel, geschiedenis, isoJaar) {
   const periodes = bouwWeekDeltas(geschiedenis, isoJaar);
   return periodes.map(p => {
     const w = p.perPersoon.get(sleutel);
-    if (!w) return { label: `W${p.isoWeek}`, verzPct: null, finAantal: null };
+    if (!w) return { label: `W${p.isoWeek}`, verzPct: null, finAantal: null, correctie: false };
+    // een correctieperiode (negatieve delta, zie bouwWeekDeltas) levert geen zinvol percentage/
+    // aantal op — die periode laten we als gat in de grafiek zien i.p.v. een misleidend cijfer,
+    // en de aanroeper meldt expliciet dát er een correctie was (zie bouwInteractiefRapportHtml)
+    if (w.correctie) return { label: `W${p.isoWeek}`, verzPct: null, finAantal: null, correctie: true };
     return {
       label: `W${p.isoWeek}`,
       verzPct: w.afl > 0 ? Math.round((w.verz / w.afl) * 100) : null,
       finAantal: w.fin,
+      correctie: false,
     };
   });
 }
@@ -945,18 +915,25 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
   const teamGrafiek = bouwSvgLijnChart(teamPunten, doelPct, '#1c4f9c') || '<p class="voetnoot">Nog geen trend beschikbaar (minimaal 2 periodes nodig).</p>';
   const vorigJaarTekst = bouwVorigJaarTekst(rijen, data.vorigJaar);
 
-  // Financiering heeft geen bedrijfsbrede %-noemer (zie parseFinancieringenTabel), maar een kaal
-  // getal ("82") zegt een manager niks — het gemiddelde van de individuele percentages, met de
-  // doelrange erbij, geeft tenminste een indicatie of dat totaal goed of slecht is.
+  // Financiering heeft geen bedrijfsbrede %-noemer (zie parseFinancieringenTabel) — een gemiddelde
+  // van individuele percentages met verschillende, onbekende noemers is geen geldig teamcijfer
+  // (eerdere versie deed dit wél, dat was fout). In plaats daarvan tellen we hoeveel mensen op of
+  // boven hun eigen doel zitten — dat is optelbaar en dus wél correct.
   const financMetDoel = rijen.filter(r => r.financAantal !== null && r.financDoel !== null);
-  const financIndicatie = financMetDoel.length > 0 ? {
-    gemiddelde: Math.round(financMetDoel.reduce((s, r) => s + (r.financRealisatie !== null ? r.financRealisatie : 0), 0) / financMetDoel.length),
-    doelMin: Math.min(...financMetDoel.map(r => r.financDoel)),
-    doelMax: Math.max(...financMetDoel.map(r => r.financDoel)),
-  } : null;
-  const financIndicatieTekst = financIndicatie
-    ? `Gem. ${financIndicatie.gemiddelde}% per persoon (doel ${financIndicatie.doelMin === financIndicatie.doelMax ? `${financIndicatie.doelMin}%` : `${financIndicatie.doelMin}–${financIndicatie.doelMax}%`}, indicatief)`
+  const financOpDoel = financMetDoel.filter(r => (r.financRealisatie !== null ? r.financRealisatie : 0) >= r.financDoel).length;
+  const financIndicatieTekst = financMetDoel.length > 0
+    ? `${financOpDoel} van ${financMetDoel.length} op of boven eigen doel (doel verschilt per merk)`
     : '';
+
+  // Ranking is bewust getemperd: het gaat om boven/onder het gemiddelde van vergelijkbare
+  // managers, niet om een wedstrijd — de exacte plek staat er nog wel bij, maar niet als opener.
+  const rankingTekst = ranking.rang
+    ? (() => {
+        const gem = Math.round(ranking.bedrijfsGemiddelde * 100);
+        const richting = ranking.eigenPct > gem ? 'boven' : ranking.eigenPct < gem ? 'onder' : 'gelijk aan';
+        return `${ranking.eigenPct}% verzekeringsconversie, dat is ${richting} het gemiddelde van ${ranking.vergelijkingsLabel} (${gem}%) — plek ${ranking.rang} van ${ranking.totaalTeams}.`;
+      })()
+    : `Te weinig afleveringen voor een zinvolle vergelijking met ${ranking.vergelijkingsLabel} (gemiddelde: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).`;
 
   const teamKaart = `
     <div class="kaart">
@@ -966,7 +943,7 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
         <div class="stat"><div class="label">Verzekeringen (jaar)</div><div class="waarde">${teamVerz}${teamVerzPct !== null ? ` (${teamVerzPct}%)` : ''}</div></div>
         <div class="stat"><div class="label">Financieringen (jaar)</div><div class="waarde">${teamFinanc}</div>${financIndicatieTekst ? `<div class="voetnoot">${financIndicatieTekst}</div>` : ''}</div>
       </div>
-      <p>${ranking.rang ? `Plek ${ranking.rang} van ${ranking.totaalTeams} ${ranking.vergelijkingsLabel} (gemiddelde ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).` : `Te weinig volume voor een ranking t.o.v. ${ranking.vergelijkingsLabel}.`}</p>
+      <p>${rankingTekst}</p>
       ${vorigJaarTekst}
       <p style="margin-bottom:4px;font-size:12px;color:var(--muted);">Verloop verzekeringsconversie</p>
       ${teamGrafiek}
@@ -997,21 +974,40 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
     const w = berekenBadgeWaarden(r);
     const isZelf = r.medewerker === managerNaam;
     const locatieRegel = info.type === 'salesmanager' ? `<p class="voetnoot" style="margin:-8px 0 12px;">${r.locatie} ${r.merk}</p>` : '';
+    const indicatiefRegel = r.afleveringen > 0 && r.afleveringen < VOLUME_DREMPEL_AFLEVERINGEN
+      ? `<p class="voetnoot" style="color:var(--fout);">Indicatief — slechts ${r.afleveringen} ${r.afleveringen === 1 ? 'aflevering' : 'afleveringen'} dit jaar, percentages kunnen sterk schommelen.</p>`
+      : '';
+
+    // Waarvan merkenpolis (via RIVA/VW Bank) i.p.v. los aangebracht — data stond al in de
+    // rapportage maar werd nergens getoond.
+    const merkenpolisRegel = (r.riva !== undefined && r.vwbank !== undefined && r.los !== undefined && r.totaal > 0)
+      ? `<div class="voetnoot">Waarvan merkenpolis (RIVA/VW Bank): ${r.riva + r.vwbank} · los aangebracht: ${r.los}</div>`
+      : '';
 
     const verzTrend = bouwSvgLijnChart(geschiedenisPersoon.map(p => ({ label: p.label, pct: p.verzPct })), w.verzDoel, '#1c4f9c')
       || '<p class="voetnoot">Nog geen trend beschikbaar (minimaal 2 periodes nodig).</p>';
     const financTrend = bouwSvgTellingChart(geschiedenisPersoon.map(p => ({ label: p.label, aantal: p.finAantal })), '#1f8a5f')
       || '<p class="voetnoot">Nog geen trend beschikbaar (minimaal 2 periodes nodig).</p>';
 
+    // Correctie-periodes (negatieve delta, zie bouwWeekDeltas) worden bewust als gat in de
+    // grafiek getoond i.p.v. een misleidend cijfer — hier melden we expliciet wanneer dat speelt,
+    // zodat het niet oogt als ontbrekende data maar als een gesignaleerde correctie.
+    const correctieWeken = geschiedenisPersoon.filter(p => p.correctie).map(p => p.label);
+    const correctieRegel = correctieWeken.length > 0
+      ? `<p class="voetnoot" style="color:var(--fout);">Correctie gedetecteerd in ${correctieWeken.join(', ')} — de YTD-stand daalde tussen twee uploads (bv. een annulering). Die periode(s) zijn als gat in de grafiek getoond in plaats van als (foutieve) nul-activiteit.</p>`
+      : '';
+
     return `<div class="detail" data-idx="${i}" hidden>
       <div class="kaart">
         <h2>${r.medewerker}${isZelf ? ' <span class="zelf-badge">jij</span>' : ''}</h2>
         ${locatieRegel}
+        ${indicatiefRegel}
         <div class="statrij">
           <div class="stat">
             <div class="label">Verzekeringen (jaar)</div>
             <div class="waarde">${r.totaal}${w.verzPct !== null ? ` <span class="${w.verzVerschil >= 0 ? 'vink-goed' : 'vink-fout'}">(${w.verzPct}% ${w.verzVerschil >= 0 ? '✓' : '✗'}, ${w.verzVerschil > 0 ? '+' : ''}${w.verzVerschil}pp)</span>` : ''}</div>
             <div class="voetnoot">Doel: ${w.verzDoel}% · ${r.afleveringen} afleveringen</div>
+            ${merkenpolisRegel}
           </div>
           <div class="stat">
             <div class="label">Financieringen (jaar)</div>
@@ -1023,6 +1019,7 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
         ${verzTrend}
         <p style="margin:14px 0 4px;font-size:12px;color:var(--muted);">Aantal financieringen per periode</p>
         ${financTrend}
+        ${correctieRegel}
         <p class="voetnoot">Het financieringspercentage hierboven komt rechtstreeks uit de rapportage; de exacte noemer daarvan wordt niet gepubliceerd, dus de trendgrafiek toont het aantal i.p.v. een percentage.</p>
       </div>
     </div>`;
@@ -1128,13 +1125,21 @@ el('btn-verwerk').addEventListener('click', async () => {
     // (of hoe ze heten) zegt niets, het weeknummer uit de PDF zelf is leidend.
     const geparsed = [];
     const overgeslagen = [];
+    // Verzamelt alle parser- en koppel-waarschuwingen over alle geüploade bestanden heen, zodat
+    // ze in één keer aan Jurgen getoond kunnen worden — voorheen werden deze door de parser wél
+    // verzameld maar nergens gelezen, waardoor een niet-herkende rij spoorloos verdween.
+    const alleWaarschuwingen = [];
     for (let i = 0; i < bestanden.length; i++) {
       el('btn-verwerk').textContent = bestanden.length > 1
         ? `Bezig… (${i + 1}/${bestanden.length})`
         : 'Bezig met verwerken…';
       const data = await parseSalesrapportagePdf(bestanden[i]);
       if (!data.isoJaar || !data.isoWeek) { overgeslagen.push(bestanden[i].name); continue; }
-      data.rijen = filterShowroomVerkopers(koppelFinancieringen(data.verzekeringenRijen, data.financieringenRijen));
+      const label = `week ${data.isoWeek}/${data.isoJaar}`;
+      data.waarschuwingen.forEach(w => alleWaarschuwingen.push(`[${label}] ${w}`));
+      const { rijen: gekoppeld, ontkoppeld } = koppelFinancieringen(data.verzekeringenRijen, data.financieringenRijen);
+      if (ontkoppeld > 0) alleWaarschuwingen.push(`[${label}] ${ontkoppeld} verkoper(s) konden niet gekoppeld worden aan financieringsdata (naam kwam niet overeen tussen de twee tabellen) — financiering staat voor hen op "onbekend", niet op 0.`);
+      data.rijen = filterShowroomVerkopers(gekoppeld);
       geparsed.push(data);
     }
 
@@ -1159,21 +1164,29 @@ el('btn-verwerk').addEventListener('click', async () => {
     huidigeData = geparsed[geparsed.length - 1];
     huidigeData.geschiedenis = laadGeschiedenis();
     const vorige = vindVorigeUpload(huidigeData.geschiedenis, huidigeData.isoJaar, huidigeData.isoWeek);
-    huidigeData.vorige = vorige;
-    huidigeData.heeftWeek = !!vorige;
-    huidigeData.trendInfo = berekenPersoonsTrends(huidigeData.geschiedenis, huidigeData.isoJaar);
     huidigeData.vorigJaar = vindVorigJaarSnapshot(huidigeData.geschiedenis, huidigeData.isoJaar, huidigeData.isoWeek);
     werkGeschiedenisInfoBij();
 
-    teams = groepeerPerManager(berekenWeekRijen(huidigeData.rijen, vorige));
+    // Waarschuw als een handmatige uitzondering (PERSOON_OVERRIDES) niemand meer treft — bv. na
+    // een schrijfwijze-wijziging in een toekomstig rapport zou die uitzondering anders stil
+    // ophouden te werken zonder dat iemand het merkt.
+    const alleNamen = new Set(huidigeData.rijen.map(r => r.medewerker));
+    Object.keys(PERSOON_OVERRIDES).forEach(naam => {
+      if (!alleNamen.has(naam)) alleWaarschuwingen.push(`Uitzondering "${naam}" (PERSOON_OVERRIDES) komt niet voor in deze rapportage — controleer of de naam nog klopt.`);
+    });
+
+    teams = groepeerPerManager(huidigeData.rijen);
     const teamNamen = Object.keys(teams).sort();
 
     const select = el('select-team');
     select.innerHTML = teamNamen.map(naam => `<option value="${naam}">${labelVoorManager(naam, teams[naam])}</option>`).join('');
-    el('status-line').textContent =
+    el('status-line').innerHTML =
       (geparsed.length > 1 ? `${geparsed.length} rapportages verwerkt (week ${geparsed[0].isoWeek} t/m ${huidigeData.isoWeek}). ` : '') +
       `${teamNamen.length} teamleiders/salesmanagers beschikbaar in week ${huidigeData.isoWeek} (${huidigeData.isoJaar}). ` +
-      (vorige ? `Periodecijfers t.o.v. week ${vorige.isoWeek}.` : 'Nog geen eerdere upload — periodecijfers verschijnen zodra er een tweede rapportage is.');
+      (vorige ? `Eerdere upload gevonden (week ${vorige.isoWeek}) — trends zijn hierop gebaseerd. ` : 'Nog geen eerdere upload — trends verschijnen zodra er een tweede rapportage is. ') +
+      (alleWaarschuwingen.length > 0
+        ? `<strong style="color:#c0392b;">⚠ ${alleWaarschuwingen.length} waarschuwing(en) — controleer voor verzending:</strong><ul style="margin:6px 0 0;padding-left:18px;">${alleWaarschuwingen.map(w => `<li>${w}</li>`).join('')}</ul>`
+        : '<span style="color:var(--goed);">✓ Geen parserwaarschuwingen.</span>');
     el('panel-teams').style.display = '';
 
     if (teamNamen.length > 0) genereerTeamMail(teamNamen[0]);
