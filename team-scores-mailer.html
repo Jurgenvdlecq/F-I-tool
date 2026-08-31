@@ -89,6 +89,7 @@
   table.aandacht-tabel th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
   .vink-goed { color: var(--goed); font-weight: 600; }
   .vink-fout { color: #c0392b; font-weight: 600; }
+  .btn-mini { background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 11px; cursor: pointer; padding: 3px 9px; font-family: inherit; }
 </style>
 </head>
 <body>
@@ -114,9 +115,29 @@
       uploaden geeft maandcijfers). Heb je oudere rapportages bewaard? Upload die één voor één
       (oud → nieuw) en de trends staan er meteen in, ook die van vorig jaar.
     </div>
-    <div style="display:flex;align-items:center;gap:10px;margin-top:10px;">
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;">
       <span style="font-size:11.5px;color:var(--muted);" id="geschiedenis-info"></span>
-      <button type="button" id="btn-wis-geschiedenis" style="background:none;border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;cursor:pointer;padding:3px 9px;font-family:inherit;">geschiedenis wissen</button>
+      <button type="button" id="btn-wis-geschiedenis" class="btn-mini">geschiedenis wissen</button>
+      <button type="button" id="btn-exporteer-geschiedenis" class="btn-mini">geschiedenis exporteren</button>
+      <label class="btn-mini" style="cursor:pointer;">geschiedenis importeren<input type="file" id="input-importeer-geschiedenis" accept="application/json" style="display:none;"></label>
+    </div>
+    <p style="font-size:11px;color:var(--muted);margin:6px 0 0;">Geschiedenis staat alleen lokaal in deze browser — exporteer 'm af en toe als back-up, of om over te zetten naar een andere computer.</p>
+  </div>
+
+  <div class="panel">
+    <button class="btn-secondary btn-block" id="btn-configuratie" type="button">⚙️ Organisatiestructuur bewerken (teamleiders, salesmanagers, uitzonderingen)</button>
+    <div id="configuratie-inhoud" style="display:none;margin-top:16px;">
+      <p style="font-size:11.5px;color:var(--muted);line-height:1.5;">
+        Dit is de lijst van teamleiders/salesmanagers die de tool herkent — bewerk 'm hier bij een
+        personeelswissel, in plaats van in de broncode. Wijzigingen gelden vanaf de eerstvolgende
+        keer dat je een rapportage verwerkt, en blijven bewaard in deze browser.
+      </p>
+      <textarea id="configuratie-json" style="width:100%;min-height:260px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);"></textarea>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+        <button type="button" id="btn-configuratie-opslaan" class="btn-primary">Opslaan</button>
+        <button type="button" id="btn-configuratie-standaard" class="btn-mini">Herstel standaardconfiguratie</button>
+        <span id="configuratie-status" style="font-size:12px;"></span>
+      </div>
     </div>
   </div>
 
@@ -166,7 +187,24 @@
 const LOCATIES = ['Voorschoten','Honselersdijk','Zoetermeer','Noordwijk','De Lier','Forepark','Leiden','Fleetsales'];
 const MERKEN = ['Seat / CUPRA','Volkswagen','Occasions','CUPRA','Skoda','Audi','LKW','SEAT'];
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+// pdf.js komt van een CDN — als die niet laadt (geen internet, een firewall die cdnjs blokkeert)
+// zou een ongeguarde aanroep hier de complete pagina-initialisatie stilzwijgend laten crashen,
+// inclusief functies die pdf.js helemaal niet nodig hebben (geschiedenis bekijken/exporteren,
+// organisatiestructuur bewerken). Alleen het uploaden zelf wordt dan uitgeschakeld, met een
+// duidelijke melding, i.p.v. dat de hele tool onbruikbaar wordt.
+if (typeof pdfjsLib !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+} else {
+  console.error('pdf.js kon niet geladen worden (CDN onbereikbaar?) — PDF-verwerking is uitgeschakeld.');
+  window.addEventListener('DOMContentLoaded', () => {
+    const dropzone = document.getElementById('dropzone-pdf');
+    if (dropzone) {
+      dropzone.style.opacity = '.5';
+      dropzone.style.pointerEvents = 'none';
+      dropzone.querySelector('.dropzone-hint').textContent = 'pdf.js kon niet laden (geen internet of CDN geblokkeerd) — probeer het later opnieuw.';
+    }
+  });
+}
 
 function isoWeekNaarDatum(isoJaar, isoWeek, dagInWeek = 1) {
   const jan4 = new Date(Date.UTC(isoJaar, 0, 4));
@@ -595,43 +633,79 @@ function classificeerTrend(pctReeks) {
    ORGANISATIESTRUCTUUR: teamleiders (locatie + merk) en salesmanagers
    (merk-breed, over alle vestigingen). Beide typen zijn selecteerbaar; een
    salesmanager ziet de opgetelde verkopers van alle teams met dat merk.
-   PERSOON_OVERRIDES corrigeert de gevallen waarin iemands officiële merk
+   persoonOverrides corrigeert de gevallen waarin iemands officiële merk
    afwijkt van de locatie+merk-indeling in de rapportage zelf — bv. Edwin
    Snaterse staat qua locatie bij Noordwijk Volkswagen, maar doet officieel
    Skoda en hoort dus alléén bij Rene Kuhn, niet ook bij Alex Heidinga of
    Antoine Linderhof.
+
+   Dit blok is bewust ÉÉN plek: bij een personeelswissel hoef je alleen
+   STANDAARD_CONFIGURATIE aan te passen (of, zonder code te raken, de
+   configuratie te bewerken via "⚙️ Organisatiestructuur" in de tool zelf
+   — die bewaart een eigen versie in de browser die voorrang krijgt op
+   onderstaande standaardwaarden).
    ============================================================ */
-const TEAMLEIDERS = [
-  { naam: 'Jos van Beelen', locatie: 'Forepark', merk: 'Occasions' },
-  { naam: 'Jan Willem Hermans', locatie: 'Forepark', merk: 'Volkswagen' },
-  { naam: 'Julian van der Plas', locatie: 'Forepark', merk: 'Skoda' },
-  { naam: 'Alwin van Rijn', locatie: 'Forepark', merk: 'LKW' },
-  { naam: 'Alex Heidinga', locatie: 'Noordwijk', merk: 'Volkswagen' },
-  { naam: 'Xander Priem', locatie: 'Zoetermeer', merk: 'Occasions' },
-  { naam: 'Wouter Schrama', locatie: 'Honselersdijk', merk: 'Occasions' },
-  { naam: 'Maikel Kegge', locatie: 'De Lier', merk: 'Volkswagen' },
-  { naam: 'Nick van der Voort', locatie: 'De Lier', merk: 'Skoda' },
-  { naam: 'Hans de Kleijn', locatie: 'De Lier', merk: 'Occasions' },
-];
+const CONFIGURATIE_SLEUTEL = 'team-scores-configuratie-v1';
 
-const SALESMANAGERS = [
-  { naam: 'Damoen Sabzewari', merk: 'Seat / CUPRA' },
-  { naam: 'Rene Kuhn', merk: 'Skoda' },
-  { naam: 'Antoine Linderhof', merk: 'Volkswagen' },
-  { naam: 'Giano Tielman', merk: 'Audi' },
-  { naam: 'Roel Oskam', merk: 'LKW' },
-];
-
-// Sleutel = medewerkernaam zoals die in de rapportage staat. Waarde = lijst met de naam/namen van
-// de manager(s) die deze persoon ALTIJD en ALLEEN te zien krijgt, in plaats van de automatische
-// locatie/merk-koppeling hierboven.
-const PERSOON_OVERRIDES = {
-  'Edwin Snaterse': ['Rene Kuhn'],
+const STANDAARD_CONFIGURATIE = {
+  teamleiders: [
+    { naam: 'Jos van Beelen', locatie: 'Forepark', merk: 'Occasions' },
+    { naam: 'Jan Willem Hermans', locatie: 'Forepark', merk: 'Volkswagen' },
+    { naam: 'Julian van der Plas', locatie: 'Forepark', merk: 'Skoda' },
+    { naam: 'Alwin van Rijn', locatie: 'Forepark', merk: 'LKW' },
+    { naam: 'Alex Heidinga', locatie: 'Noordwijk', merk: 'Volkswagen' },
+    { naam: 'Xander Priem', locatie: 'Zoetermeer', merk: 'Occasions' },
+    { naam: 'Wouter Schrama', locatie: 'Honselersdijk', merk: 'Occasions' },
+    { naam: 'Maikel Kegge', locatie: 'De Lier', merk: 'Volkswagen' },
+    { naam: 'Nick van der Voort', locatie: 'De Lier', merk: 'Skoda' },
+    { naam: 'Hans de Kleijn', locatie: 'De Lier', merk: 'Occasions' },
+  ],
+  salesmanagers: [
+    { naam: 'Damoen Sabzewari', merk: 'Seat / CUPRA' },
+    { naam: 'Rene Kuhn', merk: 'Skoda' },
+    { naam: 'Antoine Linderhof', merk: 'Volkswagen' },
+    { naam: 'Giano Tielman', merk: 'Audi' },
+    { naam: 'Roel Oskam', merk: 'LKW' },
+  ],
+  // sleutel = medewerkernaam zoals die in de rapportage staat, waarde = de manager(s) die deze
+  // persoon ALTIJD en ALLEEN te zien krijgt, in plaats van de automatische locatie/merk-koppeling
+  persoonOverrides: {
+    'Edwin Snaterse': ['Rene Kuhn'],
+  },
 };
 
+function laadConfiguratie() {
+  try {
+    const opgeslagen = localStorage.getItem(CONFIGURATIE_SLEUTEL);
+    if (!opgeslagen) return JSON.parse(JSON.stringify(STANDAARD_CONFIGURATIE));
+    const geparsed = JSON.parse(opgeslagen);
+    if (!geparsed.teamleiders || !geparsed.salesmanagers || !geparsed.persoonOverrides) throw new Error('onvolledige configuratie');
+    return geparsed;
+  } catch (e) {
+    console.error('Opgeslagen configuratie kon niet gelezen worden, standaardconfiguratie gebruikt:', e);
+    return JSON.parse(JSON.stringify(STANDAARD_CONFIGURATIE));
+  }
+}
+
+// Blijvende arrays/object (const, wel muteerbare inhoud) zodat elke functie die TEAMLEIDERS etc.
+// al bij initialisatie heeft "opgepakt" via reference gewoon de nieuwe inhoud ziet na een
+// configuratiewijziging, zonder dat elke aanroep opnieuw `laadConfiguratie()` hoeft te doen.
+const TEAMLEIDERS = [];
+const SALESMANAGERS = [];
+const PERSOON_OVERRIDES = {};
 const MANAGER_INFO = {};
-TEAMLEIDERS.forEach(t => { MANAGER_INFO[t.naam] = { type: 'teamleider', locatie: t.locatie, merk: t.merk }; });
-SALESMANAGERS.forEach(s => { MANAGER_INFO[s.naam] = { type: 'salesmanager', merk: s.merk }; });
+
+function herbouwOrganisatiestructuur() {
+  const cfg = laadConfiguratie();
+  TEAMLEIDERS.length = 0; TEAMLEIDERS.push(...cfg.teamleiders);
+  SALESMANAGERS.length = 0; SALESMANAGERS.push(...cfg.salesmanagers);
+  Object.keys(PERSOON_OVERRIDES).forEach(k => delete PERSOON_OVERRIDES[k]);
+  Object.assign(PERSOON_OVERRIDES, cfg.persoonOverrides);
+  Object.keys(MANAGER_INFO).forEach(k => delete MANAGER_INFO[k]);
+  TEAMLEIDERS.forEach(t => { MANAGER_INFO[t.naam] = { type: 'teamleider', locatie: t.locatie, merk: t.merk }; });
+  SALESMANAGERS.forEach(s => { MANAGER_INFO[s.naam] = { type: 'salesmanager', merk: s.merk }; });
+}
+herbouwOrganisatiestructuur();
 
 /* ============================================================
    PER MANAGER GROEPEREN EN MAILTEKST BOUWEN
@@ -1114,8 +1188,10 @@ function bouwBadge(label, verschil) {
 // Geschiedenis van één specifieke persoon (locatie|merk|medewerker) omgezet naar periodepunten:
 // verzPct (percentage, want de noemer — afleveringen — is bekend) en finAantal (kale telling, om
 // dezelfde reden als bouwSvgTellingChart hierboven geen %).
-function bouwPersoonsGeschiedenis(sleutel, geschiedenis, isoJaar) {
-  const periodes = bouwWeekDeltas(geschiedenis, isoJaar);
+// Neemt de al-berekende periodes aan (i.p.v. zelf bouwWeekDeltas opnieuw te draaien) — bij een
+// salesmanager met tientallen verkopers werd deze functie voorheen per persoon aangeroepen en
+// herbouwde elke aanroep de volledige geschiedenis-naar-periodes-berekening opnieuw vanaf nul.
+function bouwPersoonsGeschiedenis(periodes, sleutel) {
   return periodes.map(p => {
     const w = p.perPersoon.get(sleutel);
     if (!w) return { label: `W${p.isoWeek}`, verzPct: null, finAantal: null, correctie: false };
@@ -1259,7 +1335,7 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
 
   const detailPanels = gesorteerdeRijen.map((r, i) => {
     const sleutel = `${r.locatie}|${r.merk}|${r.medewerker}`;
-    const geschiedenisPersoon = bouwPersoonsGeschiedenis(sleutel, data.geschiedenis, data.isoJaar);
+    const geschiedenisPersoon = bouwPersoonsGeschiedenis(teamPeriodes, sleutel);
     const w = berekenBadgeWaarden(r);
     const isZelf = r.medewerker === managerNaam;
     const locatieRegel = info.type === 'salesmanager' ? `<p class="voetnoot" style="margin:-8px 0 12px;">${r.locatie} ${r.merk}</p>` : '';
@@ -1811,6 +1887,98 @@ el('btn-fi-manager').addEventListener('click', () => {
   const wordtZichtbaar = inhoud.style.display === 'none';
   inhoud.style.display = wordtZichtbaar ? '' : 'none';
   if (wordtZichtbaar) toonFIManagerOverzicht();
+});
+
+/* ============================================================
+   ORGANISATIESTRUCTUUR BEWERKEN — bevinding 17 uit de audit: personeelswissels moeten niet
+   langer een code-wijziging vereisen. Bewaart een eigen JSON-configuratie in localStorage die
+   voorrang krijgt op STANDAARD_CONFIGURATIE (zie herbouwOrganisatiestructuur hierboven).
+   ============================================================ */
+function valideerConfiguratie(cfg) {
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('Moet een JSON-object zijn met "teamleiders", "salesmanagers" en "persoonOverrides".');
+  if (!Array.isArray(cfg.teamleiders)) throw new Error('"teamleiders" moet een lijst zijn.');
+  if (!Array.isArray(cfg.salesmanagers)) throw new Error('"salesmanagers" moet een lijst zijn.');
+  if (!cfg.persoonOverrides || typeof cfg.persoonOverrides !== 'object' || Array.isArray(cfg.persoonOverrides)) throw new Error('"persoonOverrides" moet een object zijn (kan leeg: {}).');
+  cfg.teamleiders.forEach((t, i) => {
+    if (!t.naam || !t.locatie || !t.merk) throw new Error(`teamleiders[${i}] mist "naam", "locatie" of "merk".`);
+  });
+  cfg.salesmanagers.forEach((s, i) => {
+    if (!s.naam || !s.merk) throw new Error(`salesmanagers[${i}] mist "naam" of "merk".`);
+  });
+  Object.entries(cfg.persoonOverrides).forEach(([naam, lijst]) => {
+    if (!Array.isArray(lijst)) throw new Error(`persoonOverrides["${naam}"] moet een lijst van managernamen zijn.`);
+  });
+}
+
+el('btn-configuratie').addEventListener('click', () => {
+  const inhoud = el('configuratie-inhoud');
+  const wordtZichtbaar = inhoud.style.display === 'none';
+  inhoud.style.display = wordtZichtbaar ? '' : 'none';
+  if (wordtZichtbaar) el('configuratie-json').value = JSON.stringify(laadConfiguratie(), null, 2);
+});
+
+el('btn-configuratie-opslaan').addEventListener('click', () => {
+  const statusEl = el('configuratie-status');
+  try {
+    const cfg = JSON.parse(el('configuratie-json').value);
+    valideerConfiguratie(cfg);
+    localStorage.setItem(CONFIGURATIE_SLEUTEL, JSON.stringify(cfg));
+    herbouwOrganisatiestructuur();
+    statusEl.style.color = 'var(--goed)';
+    statusEl.textContent = `✓ Opgeslagen (${TEAMLEIDERS.length} teamleiders, ${SALESMANAGERS.length} salesmanagers). Verwerk de rapportage opnieuw om dit toe te passen.`;
+  } catch (err) {
+    statusEl.style.color = '#c0392b';
+    statusEl.textContent = 'Niet opgeslagen: ' + err.message;
+  }
+});
+
+el('btn-configuratie-standaard').addEventListener('click', () => {
+  if (!confirm('Terug naar de standaardconfiguratie? Je eigen aanpassingen in de organisatiestructuur gaan dan verloren.')) return;
+  localStorage.removeItem(CONFIGURATIE_SLEUTEL);
+  herbouwOrganisatiestructuur();
+  el('configuratie-json').value = JSON.stringify(laadConfiguratie(), null, 2);
+  const statusEl = el('configuratie-status');
+  statusEl.style.color = 'var(--goed)';
+  statusEl.textContent = '✓ Standaardconfiguratie hersteld. Verwerk de rapportage opnieuw om dit toe te passen.';
+});
+
+/* ============================================================
+   GESCHIEDENIS EXPORTEREN/IMPORTEREN — bevinding 18: de geschiedenis staat alleen lokaal in
+   deze browser; dit maakt 'm overdraagbaar (nieuwe computer) en back-up-baar.
+   ============================================================ */
+el('btn-exporteer-geschiedenis').addEventListener('click', () => {
+  const geschiedenis = laadGeschiedenis();
+  const blob = new Blob([JSON.stringify(geschiedenis, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `team-scores-geschiedenis-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+el('input-importeer-geschiedenis').addEventListener('change', async (ev) => {
+  const bestand = ev.target.files[0];
+  if (!bestand) return;
+  try {
+    const tekst = await bestand.text();
+    const geimporteerd = JSON.parse(tekst);
+    if (!Array.isArray(geimporteerd)) throw new Error('Bestand bevat geen lijst van rapportages.');
+    let toegevoegd = 0;
+    geimporteerd.forEach(snap => {
+      if (!snap || typeof snap.isoJaar !== 'number' || typeof snap.isoWeek !== 'number' || !Array.isArray(snap.rijen)) return;
+      bewaarSnapshot(snap);
+      toegevoegd++;
+    });
+    werkGeschiedenisInfoBij();
+    alert(`${toegevoegd} rapportage(s) uit het bestand samengevoegd met de bestaande geschiedenis (dubbele week/jaar-combinaties zijn overschreven, niet verdubbeld).`);
+  } catch (err) {
+    alert('Importeren mislukt: ' + err.message);
+  } finally {
+    ev.target.value = '';
+  }
 });
 </script>
 </body>
