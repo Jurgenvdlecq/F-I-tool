@@ -1212,7 +1212,6 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
   const info = MANAGER_INFO[managerNaam];
   const scopeLabel = info.type === 'salesmanager' ? `${info.merk} — alle vestigingen` : `${info.locatie} ${info.merk}`;
   const eindeWeek = formatDatum(isoWeekNaarDatum(data.isoJaar, data.isoWeek, 7));
-  const ranking = berekenTeamRanking(teams, managerNaam);
 
   const teamAfleveringen = rijen.reduce((s, r) => s + r.afleveringen, 0);
   const teamVerz = rijen.reduce((s, r) => s + r.totaal, 0);
@@ -1250,16 +1249,6 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
     ? `${financOpDoel} van ${financMetDoel.length} op of boven eigen doel (doel verschilt per merk)`
     : '';
 
-  // Ranking is bewust getemperd: het gaat om boven/onder het gemiddelde van vergelijkbare
-  // managers, niet om een wedstrijd — de exacte plek staat er nog wel bij, maar niet als opener.
-  const rankingTekst = ranking.rang
-    ? (() => {
-        const gem = Math.round(ranking.bedrijfsGemiddelde * 100);
-        const richting = ranking.eigenPct > gem ? 'boven' : ranking.eigenPct < gem ? 'onder' : 'gelijk aan';
-        return `${ranking.eigenPct}% verzekeringsconversie, dat is ${richting} het gemiddelde van ${ranking.vergelijkingsLabel} (${gem}%) — plek ${ranking.rang} van ${ranking.totaalTeams}.`;
-      })()
-    : `Te weinig afleveringen voor een zinvolle vergelijking met ${ranking.vergelijkingsLabel} (gemiddelde: ${Math.round(ranking.bedrijfsGemiddelde * 100)}%).`;
-
   const teamKaart = `
     <div class="kaart">
       <h2>${scopeLabel}</h2>
@@ -1269,7 +1258,6 @@ function bouwInteractiefRapportHtml(managerNaam, rijen, data) {
         <div class="stat"><div class="label">Verzekering — maand / jaar</div><div class="waarde">${teamHeeftMaandCorrectie ? 'correctie' : (teamMaandPct !== null ? `${teamMaandPct}%` : '–')} / ${teamVerzPct !== null ? `${teamVerzPct}%` : '–'}</div></div>
         <div class="stat"><div class="label">Financiering — maand / jaar</div><div class="waarde">${teamMaandFin} / ${teamFinanc}</div>${financIndicatieTekst ? `<div class="voetnoot">${financIndicatieTekst}</div>` : ''}</div>
       </div>
-      <p>${rankingTekst}</p>
       ${vorigJaarTekst}
       <p style="margin-bottom:4px;font-size:12px;color:var(--muted);">Verloop verzekeringsconversie</p>
       ${teamGrafiek}
