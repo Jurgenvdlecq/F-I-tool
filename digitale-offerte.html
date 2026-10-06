@@ -1084,7 +1084,7 @@ const opslag = (() => {
 
 function laadOfferte() {
   // Later: fetch(`/api/offertes/${token}`). Nu: ?o=<token> uit lokaal aangemaakte offertes, anders de demo.
-  const token = new URLSearchParams(location.search).get('o');
+  const token = new URLSearchParams(location.search).get('o') || opslag.lees(`${OPSLAG_PREFIX}:actief`, null);
   if (token) {
     const lijst = opslag.lees(`${OPSLAG_PREFIX}:offertes`, {});
     if (lijst[token]) return lijst[token];
@@ -1580,7 +1580,7 @@ $('#knopPdf').addEventListener('click', () => {
   if (offerte.pdfUrl) window.open(offerte.pdfUrl, '_blank', 'noopener');
   else { toonToast('In de pilot opent hier de originele PDF-offerte'); $('#pdfVak').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
 });
-$('#knopPrint').addEventListener('click', () => { registreer('offerte_geprint'); window.print(); });
+$('#knopPrint')?.addEventListener('click', () => { registreer('offerte_geprint'); window.print(); });
 
 /* =====================================================================
    TABS & NAVIGATIE (klant)
@@ -1949,18 +1949,38 @@ function renderVerkoper() {
 
 async function kopieer(tekst, melding) {
   try { await navigator.clipboard.writeText(tekst); toonToast(melding); }
-  catch (e) { window.prompt('Kopieer deze link:', tekst); }
+  catch (e) { toonToast('Kopiëren lukt hier niet. Link: ' + tekst); }
 }
 
+// Herladen met behoud van de rest van de URL (werkt ook in een ingesloten viewer)
+function herlaad(url) {
+  try { history.replaceState(null, '', url); } catch (e) { /* niets */ }
+  location.reload();
+}
+// Naar een andere interactieve offerte gaan (klant- of verkoperweergave)
+function openOfferte(token, verkoper) {
+  opslag.schrijf(`${OPSLAG_PREFIX}:actief`, token === DEMO_OFFERTE.id ? null : token);
+  const u = new URL(location.href);
+  u.hash = verkoper ? 'verkoper' : '';
+  if (u.searchParams.has('o')) { u.searchParams.delete('o'); location.href = u.toString(); }
+  else herlaad(u.toString());
+}
+// Wissen in twee stappen (geen confirm(): die wordt in sommige viewers geblokkeerd)
+let resetTimer = null;
 $('#knopReset').addEventListener('click', () => {
-  if (!confirm('Alle demo-klikgegevens en keuzes voor deze offerte wissen?')) return;
+  const knop = $('#knopReset');
+  if (!resetTimer) {
+    knop.textContent = 'Klik nogmaals om te wissen';
+    resetTimer = setTimeout(() => { resetTimer = null; knop.textContent = 'Demo-data wissen'; }, 4000);
+    return;
+  }
   opslag.verwijder(sleutelEvents);
   opslag.verwijder(sleutelKeuze);
   try { sessionStorage.removeItem('wb-sessie'); } catch (e) { /* niets */ }
-  location.href = location.href.split('#')[0] + '#verkoper';
-  location.reload();
+  const u = new URL(location.href); u.hash = 'verkoper';
+  herlaad(u.toString());
 });
-$('#knopExport').addEventListener('click', () => {
+$('#knopExport')?.addEventListener('click', () => {
   const data = { offerte, events, inzichten: berekenInzichten(events), geexporteerd: new Date().toISOString() };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -2047,9 +2067,11 @@ $('#flowMaak').addEventListener('click', () => {
   const lijst = opslag.lees(`${OPSLAG_PREFIX}:offertes`, {});
   lijst[token] = nieuw;
   opslag.schrijf(`${OPSLAG_PREFIX}:offertes`, lijst);
-  const url = `${location.origin}${location.pathname}?o=${token}`;
+  const u = new URL(location.href); u.hash = ''; u.searchParams.set('o', token);
+  const url = u.toString();
   $('#flowUrl').textContent = url;
   $('#flowOpen').href = url;
+  $('#flowOpen').onclick = e => { e.preventDefault(); openOfferte(token, false); };
   $('#flowKlaarTekst').textContent = `${nieuw.voertuig.merk} ${nieuw.voertuig.model} voor ${d.klant}. Stuur deze persoonlijke link naar de klant.`;
   $('#flowKopieer').onclick = () => kopieer(url, 'Persoonlijke link gekopieerd');
   zetFlowStap(3);
@@ -2058,14 +2080,13 @@ $('#flowMaak').addEventListener('click', () => {
 
 function renderOfferteLijst() {
   const lijst = Object.values(opslag.lees(`${OPSLAG_PREFIX}:offertes`, {}));
-  const basis = `${location.origin}${location.pathname}`;
   const items = [{ id: DEMO_OFFERTE.id, demo: true, ...DEMO_OFFERTE }, ...lijst];
   $('#offerteLijst').innerHTML = `<li style="border:0;padding:4px 0;font-weight:600;color:var(--navy)">Interactieve offertes in deze demo</li>` + items.map(o => {
-    const url = o.demo ? basis : `${basis}?o=${o.id}`;
     const actief = o.id === offerte.id;
     return `<li><span><strong style="color:var(--navy)">${escapeHtml(o.voertuig.merk + ' ' + o.voertuig.model)}</strong> · ${escapeHtml([o.klant.aanhef, o.klant.voorletters, o.klant.achternaam].filter(Boolean).join(' '))}${actief ? ' <span class="badge blauw">deze pagina</span>' : ''}</span>
-      <span style="display:flex;gap:6px"><a class="knop knop-stil knop-klein" href="${url}#verkoper">Interesse</a><a class="knop knop-secundair knop-klein" href="${url}">Klantpagina</a></span></li>`;
+      <span style="display:flex;gap:6px"><button class="knop knop-stil knop-klein" type="button" data-open-offerte="${escapeHtml(o.id)}" data-verkoper="1">Interesse</button><button class="knop knop-secundair knop-klein" type="button" data-open-offerte="${escapeHtml(o.id)}">Klantpagina</button></span></li>`;
   }).join('');
+  $$('[data-open-offerte]').forEach(k => k.addEventListener('click', () => openOfferte(k.dataset.openOfferte, !!k.dataset.verkoper)));
 }
 
 /* =====================================================================
