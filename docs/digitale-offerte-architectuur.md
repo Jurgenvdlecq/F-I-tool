@@ -30,11 +30,26 @@ Verkoper maakt offerte  →  PDF uploaden  →  gegevens uitlezen  →  controle
 
 ## Offertecontract (velden)
 
-`nummer, datum, geldigTot, taal, klant{aanhef, voorletters, achternaam, email}, verkoper{naam, functie, vestiging, telefoon, whatsapp, email}, voertuig{merk, model, uitvoering, bouwjaar, kilometerstand, brandstof, transmissie, vermogenPk, kenteken, occasionnummer, kleur, carrosserie, fotoUrl}, prijs{verkoopprijs, inbegrepen[]}, usps[], financiering{rentePct, aanbetalingPct, looptijd, looptijden[], minPct, maxPct, slottermijn, minTeFinancieren}, inruil (optioneel, al getaxeerd), pdfUrl`
+`nummer, datum, geldigTot, taal, aanleiding{type: showroom|lead, datum, kanaal}, notitie, klant{aanhef, voorletters, achternaam, email, telefoon, postcode, huisnummer}, verkoper{naam, functie, vestiging, telefoon, whatsapp, email, fotoUrl}, voertuig{merk, model, uitvoering, bouwjaar, kilometerstand, brandstof, transmissie, vermogenPk, kenteken, occasionnummer, kleur, carrosserie, fotoUrl}, prijs{verkoopprijs, regels[{omschrijving, bedrag, notitie}]}, garantie, aflevering, afspraken[], financiering{rentePct, aanbetalingPct, looptijd, looptijden[], minPct, maxPct, slottermijn, minTeFinancieren, voorstel{aanbetaling, looptijd}}, inruil{kenteken, merk, model, bouwjaar, km, waarde, getaxeerd, taxatieDatum}, pdfUrl`
+
+Optionele velden die leeg zijn, vallen netjes weg. Zonder `aanleiding` gedraagt de pagina zich als na een lead.
+
+## Persoonlijke offerte, geen advertentie
+
+De pagina is een offerte die na een lead of showroombezoek wordt verstuurd. Daarom:
+
+- Een bericht van de verkoper dat past bij de aanleiding (showroom of lead). Met `notitie` overschrijft de verkoper het.
+- "Wat we hebben afgesproken" (showroom) of "Uw volgende stap" (lead).
+- In de prijskaart alleen feiten van deze offerte: geldigheid, aflevering, garantie, getaxeerde inruil. Geen algemene verkoopargumenten.
+- De calculator start op het besproken voorstel ("Besproken voorstel" / "Terug naar het voorstel").
+- Een getaxeerde inruil staat vast in de berekening.
+- De prijsopbouw volgt de regels uit de offerte.
+- Na `geldigTot` toont de pagina dat de offerte is verlopen; digitaal akkoord is dan niet mogelijk.
+- De afspraakopties volgen de aanleiding: vervolgafspraak of aflevering na een bezoek, proefrit of bezichtiging na een lead.
 
 ## Events
 
-`pagina_geopend, tab_bekeken{tab, bron}, aanbetaling_gewijzigd{van, naar, bedrag}, looptijd_gewijzigd{van, naar}, financiering_interesse, contactvoorkeur, uitleg_bekeken, verzekering_gestart, verzekering_ingevuld, verzekering_bereken_onvolledig, verzekering_berekend, specificaties_bekeken, pdf_geopend, offerte_geprint, offerte_gedeeld, contact_geopend{modus}, contact_verstuurd{modus}, inruil_gestart, kenteken_opgezocht{gevonden}, inruil_toegevoegd, inruil_verwijderd, aanvraag_gestart{bron}, aanvraag_afgebroken{stap}, aanvraag_ingediend{soort}, akkoord_gestart, akkoord_gegeven{betaalwijze, verzekeringsvoorstel}, whatsapp_geklikt{bron}, taal_gewijzigd{taal}`
+`pagina_geopend, tab_bekeken{tab, bron}, aanbetaling_gewijzigd{van, naar, bedrag}, looptijd_gewijzigd{van, naar}, financiering_interesse, contactvoorkeur, uitleg_bekeken, verzekering_gestart, verzekering_ingevuld, verzekering_bereken_onvolledig, verzekering_berekend, specificaties_bekeken, pdf_geopend, offerte_geprint, offerte_gedeeld, contact_geopend{modus}, contact_verstuurd{modus}, inruil_gestart, kenteken_opgezocht{gevonden}, inruil_toegevoegd, inruil_verwijderd, aanvraag_gestart{bron}, aanvraag_afgebroken{stap}, aanvraag_ingediend{soort}, voorstel_hersteld, akkoord_gestart, akkoord_gegeven{betaalwijze, verzekeringsvoorstel}, whatsapp_geklikt{bron}, taal_gewijzigd{taal}`
 
 Elk financiering-event bevat een `stand` (aanbetaling %, €, looptijd, maandbedrag). Daarmee zijn de "laatste keuze" en de "laatste berekening" altijd te reconstrueren.
 
